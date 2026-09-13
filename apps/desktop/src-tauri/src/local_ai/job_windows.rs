@@ -160,8 +160,25 @@ impl OwnedChild {
             args.push("--model".into());
             args.push(quote(launch.model.path.as_os_str())?);
             let mut command: Vec<u16> = args.join(" ").encode_utf16().chain(Some(0)).collect();
-            // A fresh explicit Unicode environment block; no proxy/library/MCP inheritance.
-            let environment: Vec<u16> = format!("LLAMA_API_KEY={key}\0\0").encode_utf16().collect();
+            // Winsock needs SystemRoot; query the OS, never inherit a parent override.
+            let mut system_root = vec![0u16; 32768];
+            let root_length = windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW(
+                Some(&mut system_root),
+            ) as usize;
+            if root_length == 0
+                || root_length >= system_root.len()
+                || system_root[root_length] != 0
+                || system_root[..root_length].contains(&0)
+            {
+                return Err(ErrorCode::StartupFailed);
+            }
+            let system_root = String::from_utf16(&system_root[..root_length])
+                .map_err(|_| ErrorCode::StartupFailed)?;
+            // Fresh Unicode block: only the generated key and required OS value.
+            let environment: Vec<u16> =
+                format!("LLAMA_API_KEY={key}\0SystemRoot={system_root}\0\0")
+                    .encode_utf16()
+                    .collect();
             let mut process = PROCESS_INFORMATION::default();
             startup_stage!(10);
             CreateProcessW(

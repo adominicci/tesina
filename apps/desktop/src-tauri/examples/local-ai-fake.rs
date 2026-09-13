@@ -441,6 +441,24 @@ fn main() {
             .unwrap();
     }
     let listener = listener.unwrap();
+    #[cfg(windows)]
+    if scenario == "launch-integrity" {
+        use std::os::windows::ffi::OsStrExt;
+        let mut expected = [0u16; 32768];
+        let length = unsafe {
+            windows::Win32::System::SystemInformation::GetSystemWindowsDirectoryW(Some(
+                &mut expected,
+            ))
+        } as usize;
+        assert!(length > 0 && length < expected.len());
+        let actual = std::env::var_os("SystemRoot").unwrap();
+        assert!(actual.encode_wide().eq(expected[..length].iter().copied()));
+        assert!(
+            std::env::vars_os().all(|(name, _)| name.to_str().is_some_and(|name| name
+                .eq_ignore_ascii_case("SystemRoot")
+                || name == "LLAMA_API_KEY"))
+        );
+    }
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
             break;

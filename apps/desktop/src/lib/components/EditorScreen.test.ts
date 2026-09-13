@@ -3,11 +3,13 @@
 import { flushSync, mount, tick, unmount } from "svelte";
 import type { Content, Editor as TiptapEditor } from "@tiptap/core";
 import { exportDocx } from "@tesina/docx-export";
-import { NODE_NAMES, type Reference } from "@tesina/engine";
+import { checkApaDocument, NODE_NAMES, type Reference } from "@tesina/engine";
 import { strFromU8, unzipSync } from "fflate";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { undoDepth } from "@tiptap/pm/history";
 import type { Essay } from "$lib/model/essay";
 import { m } from "$lib/paraglide/messages";
+import { setLocale } from "$lib/paraglide/runtime";
 import { createAutosaveController } from "$lib/persist/autosaveController.svelte";
 import { persistence } from "$lib/persist/coordinator";
 import { UpdaterStore } from "$lib/state/updater.svelte";
@@ -22,6 +24,7 @@ import type {
   PaginationEnvironment,
   StablePaginationPlan,
 } from "$lib/editor/pagination/types";
+import { studentTitlePageWarnings } from "$lib/model/titlePageValidation";
 
 const canonicalNotesExcerpt = bundledReleaseNotes.body
   .split("\n")
@@ -301,7 +304,530 @@ afterEach(() => {
   runtime.citationLocales = [];
   runtime.referenceLocales = [];
   runtime.referenceEmptyLabels = [];
+  setLocale("es", { reload: false });
   document.body.replaceChildren();
+});
+
+describe("Write and Study workspace modes", () => {
+  it("defaults to Write and replaces it with Study while the editor stays mounted and inert", async () => {
+    const component = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: essayWithBody(
+          "It is important to note that the policy changed in many ways during review.",
+        ),
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const mode = document.querySelector(
+      `[aria-label="${m.writing_coach_mode_label()}"]`,
+    );
+    expect(mode).not.toBeNull();
+    const write = [...mode!.querySelectorAll("button")].find((item) =>
+      item.textContent?.trim() === m.writing_coach_mode_write()
+    )!;
+    const study = [...mode!.querySelectorAll("button")].find((item) =>
+      item.textContent?.trim() === m.writing_coach_mode_study()
+    )!;
+    expect(write.getAttribute("aria-pressed")).toBe("true");
+    expect(study.getAttribute("aria-pressed")).toBe("false");
+    expect(runtime.editors).toHaveLength(1);
+    const editor = runtime.editors[0]!;
+    const beforeJson = JSON.stringify(editor.getJSON());
+    const beforeUndo = undoDepth(editor.state);
+
+    study.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(study.getAttribute("aria-pressed")).toBe("true");
+    expect(document.querySelector("[data-coach-workspace]")).not.toBeNull();
+    const writeWorkspace = document.querySelector("[data-write-workspace]");
+    expect(writeWorkspace?.getAttribute("aria-hidden")).toBe("true");
+    expect((writeWorkspace as HTMLElement & { inert: boolean }).inert).toBe(
+      true,
+    );
+    expect(runtime.editors).toHaveLength(1);
+    expect(document.querySelector(
+      `[aria-label="${m.apa_check_menu_label()}"]`,
+    )).toBeNull();
+
+    write.click();
+    await tick();
+    flushSync();
+    expect(write.getAttribute("aria-pressed")).toBe("true");
+    expect(writeWorkspace?.getAttribute("aria-hidden")).toBe("false");
+    expect((writeWorkspace as HTMLElement & { inert: boolean }).inert).toBe(
+      false,
+    );
+    expect(JSON.stringify(editor.getJSON())).toBe(beforeJson);
+    expect(undoDepth(editor.state)).toBe(beforeUndo);
+    await unmount(component);
+  });
+
+  it("moves focus only on user entry and preserves focused Study controls during background analysis", async () => {
+    const essay = essayWithBody("Seed");
+    essay.content = {
+      type: "doc",
+      content: [{
+        type: NODE_NAMES.sectionBody,
+        content: [
+          {
+            type: "paragraph",
+            content: [{
+              type: "text",
+              text:
+                "It is important to note that the policy changed in many ways during review.",
+            }],
+          },
+          {
+            type: "paragraph",
+            content: [{
+              type: "text",
+              text: "A separate paragraph records the committee result.",
+            }],
+          },
+        ],
+      }],
+    };
+    const component = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay,
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const study = [
+      ...document.querySelectorAll<HTMLButtonElement>(".coach-mode button"),
+    ].find(
+      (item) => item.textContent?.trim() === m.writing_coach_mode_study(),
+    )!;
+    study.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(document.activeElement).toBe(
+      document.querySelector("#writing-coach-heading"),
+    );
+    const next = [...document.querySelectorAll("button")].find((item) =>
+      item.textContent?.trim() === m.writing_coach_next()
+    ) as HTMLButtonElement;
+    next.focus();
+    let secondParagraphPosition = -1;
+    let paragraphIndex = 0;
+    runtime.editors[0]!.state.doc.descendants((node, position) => {
+      if (node.type.name !== "paragraph") return;
+      if (paragraphIndex === 1) secondParagraphPosition = position;
+      paragraphIndex += 1;
+    });
+    expect(secondParagraphPosition).toBeGreaterThan(0);
+    runtime.editors[0]!.commands.insertContentAt(
+      secondParagraphPosition + 1,
+      "Earlier, ",
+    );
+    await drainMicrotasks();
+    flushSync();
+    expect(document.querySelector('[role="status"]')?.textContent).toContain(
+      m.writing_coach_status_analyzing(),
+    );
+    expect(document.activeElement).toBe(next);
+    expect(document.querySelectorAll('[role="status"][aria-live="polite"]'))
+      .toHaveLength(1);
+    await unmount(component);
+  });
+
+  it("announces stale Edit navigation after Write opens without selecting or changing text", async () => {
+    const component = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: essayWithBody(
+          "The policy changed in many ways during review.",
+        ),
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const editor = runtime.editors[0]!;
+    const beforeJson = JSON.stringify(editor.getJSON());
+    const beforeSelection = editor.state.selection.toJSON();
+    const mountedWriteStatus = document.querySelector(
+      "[data-coach-write-status]",
+    );
+    expect(mountedWriteStatus).not.toBeNull();
+    expect(mountedWriteStatus?.textContent).toBe("");
+    expect(document.querySelectorAll('[role="status"][aria-live="polite"]'))
+      .toHaveLength(1);
+    [...document.querySelectorAll<HTMLButtonElement>(".coach-mode button")]
+      .find((item) =>
+        item.textContent?.trim() === m.writing_coach_mode_study()
+      )!.click();
+    await drainMicrotasks();
+    flushSync();
+
+    editor.destroy();
+    [...document.querySelectorAll<HTMLButtonElement>("button")]
+      .find((item) =>
+        item.textContent?.trim() === m.writing_coach_edit_passage()
+      )!.click();
+    await drainMicrotasks();
+    flushSync();
+
+    expect(document.querySelector("[data-coach-workspace]")).toBeNull();
+    expect(document.querySelector("[data-coach-write-status]")?.textContent)
+      .toContain(m.writing_coach_status_stale());
+    expect(document.querySelectorAll('[role="status"][aria-live="polite"]'))
+      .toHaveLength(1);
+    expect(editor.state.selection.toJSON()).toEqual(beforeSelection);
+    expect(JSON.stringify(editor.getJSON())).toBe(beforeJson);
+    expect(document.querySelector(".writing-coach-source-emphasis")).toBeNull();
+
+    [...document.querySelectorAll<HTMLButtonElement>(".coach-mode button")]
+      .find((item) =>
+        item.textContent?.trim() === m.writing_coach_mode_study()
+      )!.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(document.querySelector("[data-coach-workspace]")).not.toBeNull();
+    expect(document.querySelector("[data-coach-source]")?.textContent)
+      .toContain("in many ways");
+    await unmount(component);
+  });
+
+  it("does not restore a prior fixed selection after Write or preview exits", async () => {
+    const component = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: essayWithBody(
+          "It is important to note that the policy changed in many ways during review.",
+        ),
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const modes = [...document.querySelectorAll<HTMLButtonElement>(
+      ".coach-mode button",
+    )];
+    const write = modes.find((item) =>
+      item.textContent?.trim() === m.writing_coach_mode_write()
+    )!;
+    const study = modes.find((item) =>
+      item.textContent?.trim() === m.writing_coach_mode_study()
+    )!;
+    const next = () =>
+      [...document.querySelectorAll<HTMLButtonElement>("button")].find(
+        (item) => item.textContent?.trim() === m.writing_coach_next(),
+      )!;
+    const count = () =>
+      document.querySelector("[data-coach-count]")?.textContent;
+
+    study.click();
+    await drainMicrotasks();
+    flushSync();
+    next().click();
+    flushSync();
+    expect(count()).toBe(m.writing_coach_position({ position: 2, total: 2 }));
+    write.click();
+    flushSync();
+    study.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(count()).toBe(m.writing_coach_position({ position: 1, total: 2 }));
+
+    next().click();
+    flushSync();
+    const preview = document.querySelector<HTMLButtonElement>(
+      `[aria-label="${m.tb_preview()}"]`,
+    )!;
+    preview.click();
+    flushSync();
+    preview.click();
+    flushSync();
+    study.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(count()).toBe(m.writing_coach_position({ position: 1, total: 2 }));
+    await unmount(component);
+  });
+
+  it("starts a fresh Write session with no issue, suppression, focus, or emphasis after an essay remount", async () => {
+    const firstEssay = essayWithBody(
+      "It is important to note that the policy changed in many ways during review.",
+    );
+    firstEssay.id = "coach-essay-one";
+    const first = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: firstEssay,
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const study = [...document.querySelectorAll<HTMLButtonElement>(
+      ".coach-mode button",
+    )].find((item) =>
+      item.textContent?.trim() === m.writing_coach_mode_study()
+    )!;
+    study.click();
+    await drainMicrotasks();
+    flushSync();
+    document.querySelector<HTMLButtonElement>(
+      ".actions .quiet",
+    )!.click();
+    flushSync();
+    expect(document.querySelector("[data-coach-count]")?.textContent).toContain(
+      "1",
+    );
+    await unmount(first);
+    document.body.replaceChildren();
+
+    const secondEssay = essayWithBody(
+      "It is important to note that the policy changed in many ways during review.",
+    );
+    secondEssay.id = "coach-essay-two";
+    const second = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: secondEssay,
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const modes = [...document.querySelectorAll<HTMLButtonElement>(
+      ".coach-mode button",
+    )];
+    expect(
+      modes.find((item) =>
+        item.textContent?.trim() === m.writing_coach_mode_write()
+      )?.getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(document.querySelector("[data-coach-workspace]")).toBeNull();
+    expect(document.querySelector(".writing-coach-source-emphasis")).toBeNull();
+
+    modes.find((item) =>
+      item.textContent?.trim() === m.writing_coach_mode_study()
+    )!.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(document.querySelector("[data-coach-count]")?.textContent).toBe(
+      m.writing_coach_position({ position: 1, total: 2 }),
+    );
+    expect(document.activeElement).toBe(
+      document.querySelector("#writing-coach-heading"),
+    );
+    await unmount(second);
+  });
+
+  it("keeps coach review out of persistence, storage, network, APA, schema, history, and export bytes", async () => {
+    setLocale("es", { reload: false });
+    const essay = exportableEssay(bodyDoc(
+      "It is important to note that the policy changed in many ways during review.",
+    ));
+    const component = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay,
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    const editor = runtime.editors[0]!;
+    const exportBytes = (content: unknown) =>
+      exportDocx({
+        content,
+        settings: {
+          documentLanguage: essay.settings.documentLanguage,
+          variant: essay.settings.variant,
+          font: essay.settings.font,
+          paperSize: essay.settings.paperSize,
+        },
+        titlePage: essay.titlePage,
+        references: [],
+      });
+    const beforeDocument = JSON.stringify(editor.getJSON());
+    const beforeEssay = JSON.stringify(essay);
+    const beforeSchema = Object.keys(editor.schema.nodes);
+    const beforeUndo = undoDepth(editor.state);
+    const beforeApa = checkApaDocument(editor.getJSON());
+    const beforeEligibility = studentTitlePageWarnings(
+      essay.titlePage,
+      essay.settings.documentLanguage,
+    );
+    const beforeBytes = await exportBytes(editor.getJSON());
+    runtime.persist.mockReset();
+    runtime.exportEssayToDocx.mockReset();
+    runtime.exportEssayToPdf.mockReset();
+    const localStorageWrite = vi.spyOn(Storage.prototype, "setItem");
+    const fetchCall = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+
+    const coachAction = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>(
+        "button",
+      )].find((item) => item.textContent?.trim() === label);
+    const clickCoach = (label: string) => {
+      const action = coachAction(label);
+      if (!action) throw new Error(`missing coach action: ${label}`);
+      action.click();
+    };
+    clickCoach(m.writing_coach_mode_study());
+    await drainMicrotasks();
+    flushSync();
+    clickCoach(m.writing_coach_next());
+    clickCoach(m.writing_coach_previous());
+    clickCoach(m.writing_coach_edit_passage());
+    await vi.waitFor(() =>
+      expect(document.querySelector(".writing-coach-source-emphasis"))
+        .not.toBeNull()
+    );
+    await tick();
+    flushSync();
+    clickCoach(m.writing_coach_mode_study());
+    await vi.waitFor(
+      () => {
+        flushSync();
+        expect(coachAction(m.writing_coach_not_helpful())).toBeDefined();
+        expect(coachAction(m.writing_coach_dismiss())).toBeDefined();
+      },
+    );
+    clickCoach(m.writing_coach_not_helpful());
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector("[data-coach-count]")?.textContent).toBe(
+        m.writing_coach_position({ position: 1, total: 1 }),
+      );
+      expect(coachAction(m.writing_coach_dismiss())).toBeDefined();
+    });
+    clickCoach(m.writing_coach_dismiss());
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector(
+        '[data-coach-state][data-state="no-current-issues"]',
+      ))
+        .not.toBeNull();
+    });
+    clickCoach(m.writing_coach_mode_write());
+    await tick();
+
+    expect(JSON.stringify(editor.getJSON())).toBe(beforeDocument);
+    expect(JSON.stringify(essay)).toBe(beforeEssay);
+    expect(Object.keys(editor.schema.nodes)).toEqual(beforeSchema);
+    expect(undoDepth(editor.state)).toBe(beforeUndo);
+    expect(checkApaDocument(editor.getJSON())).toEqual(beforeApa);
+    expect(studentTitlePageWarnings(
+      essay.titlePage,
+      essay.settings.documentLanguage,
+    )).toEqual(beforeEligibility);
+    const beforeArchive = unzipSync(beforeBytes);
+    const afterArchive = unzipSync(await exportBytes(editor.getJSON()));
+    expect(afterArchive["word/document.xml"]).toEqual(
+      beforeArchive["word/document.xml"],
+    );
+    expect(afterArchive["word/styles.xml"]).toEqual(
+      beforeArchive["word/styles.xml"],
+    );
+    expect(runtime.persist).not.toHaveBeenCalled();
+    expect(runtime.exportEssayToDocx).not.toHaveBeenCalled();
+    expect(runtime.exportEssayToPdf).not.toHaveBeenCalled();
+    expect(localStorageWrite).not.toHaveBeenCalled();
+    expect(fetchCall).not.toHaveBeenCalled();
+
+    editor.commands.insertContentAt(2, "Student revision: ");
+    expect(JSON.stringify(editor.getJSON())).not.toBe(beforeDocument);
+    localStorageWrite.mockRestore();
+    fetchCall.mockRestore();
+    await unmount(component);
+  });
+
+  it("keeps UI and document language axes crossed through Study and preview", async () => {
+    setLocale("en", { reload: false });
+    const spanishEssay = essayWithBody(
+      "Cabe señalar que la política cambió de alguna manera durante la revisión.",
+    );
+    spanishEssay.settings.documentLanguage = "es";
+    const spanishComponent = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: spanishEssay,
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    [...document.querySelectorAll<HTMLButtonElement>(".coach-mode button")]
+      .find((item) =>
+        item.textContent?.trim() ===
+          m.writing_coach_mode_study(undefined, { locale: "en" })
+      )!.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(document.querySelector("[data-coach-source]")?.textContent)
+      .toContain("la política cambió de alguna manera");
+    expect(document.querySelector(".category")?.textContent).toBe(
+      m.writing_coach_category_voice(undefined, { locale: "en" }),
+    );
+    const preview = document.querySelector<HTMLButtonElement>(
+      `[aria-label="${m.tb_preview(undefined, { locale: "en" })}"]`,
+    )!;
+    preview.click();
+    flushSync();
+    expect(document.querySelector("[data-coach-workspace]")).toBeNull();
+    expect(document.querySelector(".preview-host")).not.toBeNull();
+    await unmount(spanishComponent);
+    document.body.replaceChildren();
+
+    setLocale("es", { reload: false });
+    const englishEssay = essayWithBody(
+      "It is important to note that the policy changed in many ways during review.",
+    );
+    const englishComponent = mount(EditorScreen, {
+      target: document.body,
+      props: {
+        essay: englishEssay,
+        newlyCreated: false,
+        onLaunchConsumed: vi.fn(),
+        onBack: vi.fn(),
+        onOpenLibrary: vi.fn(),
+      },
+    });
+    flushSync();
+    [...document.querySelectorAll<HTMLButtonElement>(".coach-mode button")]
+      .find((item) =>
+        item.textContent?.trim() ===
+          m.writing_coach_mode_study(undefined, { locale: "es" })
+      )!.click();
+    await drainMicrotasks();
+    flushSync();
+    expect(document.querySelector("[data-coach-source]")?.textContent)
+      .toContain("the policy changed in many ways");
+    expect(document.querySelector(".category")?.textContent).toBe(
+      m.writing_coach_category_voice(undefined, { locale: "es" }),
+    );
+    await unmount(englishComponent);
+  });
 });
 
 describe("outline Add menu dismissal", () => {

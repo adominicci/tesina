@@ -7,14 +7,13 @@ import {
 
 describe("bundled release notes", () => {
   it("bundles the exact desktop package version from the canonical changelog", () => {
-    const expectedNotes = `### Security
+    const expectedNotes = `### Added
 
-- Update Tiptap to 3.31.3 to fix prototype manipulation in merged DOM attributes
-  and excessive processing in Markdown attribute parsing.
-- Update Vitest to 4.1.11 to fix file access outside allowed paths in its mock
-  development-server plugin.`;
+- A local English and Spanish Study workspace offers deterministic,
+  question-led writing feedback without changing the paper automatically or
+  acting as APA authority.`;
 
-    expect(bundledReleaseNotes.version).toBe("0.1.23");
+    expect(bundledReleaseNotes.version).toBe("0.1.24");
     expect(bundledReleaseNotes.version).toBe(desktopPackage.version);
     expect(bundledReleaseNotes.body).toBe(expectedNotes);
     expect(bundledReleaseNotes.body).not.toContain("## [0.1.2]");

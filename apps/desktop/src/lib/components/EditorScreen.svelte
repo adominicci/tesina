@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick, untrack } from "svelte";
+  import { onDestroy, onMount, tick, untrack } from "svelte";
   import type { Attachment } from "svelte/attachments";
   import type { Editor as TiptapEditor } from "@tiptap/core";
   import { hasAuthoredBodyTitle } from "@tesina/docx-export";
@@ -105,6 +105,13 @@
   } from "$lib/persist/coordinator";
   import { createAutosaveController } from "$lib/persist/autosaveController.svelte";
   import { useReleaseNotesController } from "$lib/update/releaseNotesController.svelte";
+  import { createWritingCoachController } from "$lib/learning/coachExperience/controller";
+  import type { CoachControllerState } from "$lib/learning/coachExperience/types";
+  import type {
+    CoachEditorBridge,
+    CoachEditorHandle,
+  } from "$lib/learning/coachExperience/editorPlugin";
+  import WritingCoachStudy from "$lib/components/WritingCoachStudy.svelte";
 
   interface Props {
     essay: Essay;
@@ -194,6 +201,71 @@
     untrack(() => collectCitedRefIds(essay.content)),
   );
   let lastDoc = $state<unknown>(untrack(() => essay.content));
+  const coachEssayId = untrack(() => essay.id);
+  let coachRevision = 0;
+  let coachEditorHandle: CoachEditorHandle | null = null;
+  const coachController = createWritingCoachController(coachEssayId);
+  let coachMode = $state<"write" | "study">("write");
+  let coachState = $state<CoachControllerState>(coachController.getState());
+  let coachNavigationStale = $state(false);
+  let coachHeading: HTMLHeadingElement | null = null;
+  const unsubscribeCoach = coachController.subscribe((next) => {
+    coachState = next;
+  });
+  const syncCoachSnapshot = () => {
+    if (!coachEditorHandle) return;
+    coachController.updateSnapshot(coachEditorHandle.capture(coachEssayId));
+  };
+  const coachBridge: CoachEditorBridge = {
+    currentRevision: () => coachRevision,
+    attach: (handle) => {
+      coachEditorHandle = handle;
+      if (handle) syncCoachSnapshot();
+    },
+    onTransaction: (event) => {
+      if (event.docChanged) coachRevision += 1;
+      const readText = (range: { from: number; to: number }) =>
+        event.doc.textBetween(range.from, range.to, "", "");
+      coachController.mapFixedSource(event.mapping, readText, coachRevision);
+      coachController.mapSuppressions(event.mapping, readText);
+      if (event.docChanged || event.externalCitationRefresh) {
+        queueMicrotask(syncCoachSnapshot);
+      }
+    },
+  };
+
+  async function enterCoachStudy(): Promise<void> {
+    previewOpen = false;
+    coachNavigationStale = false;
+    syncCoachSnapshot();
+    coachController.enterStudy();
+    coachMode = "study";
+    await tick();
+    coachHeading?.focus();
+  }
+
+  function returnToWrite(): void {
+    coachController.leaveStudy();
+    coachMode = "write";
+    coachNavigationStale = false;
+    coachEditorHandle?.clearHighlight();
+  }
+
+  async function editCoachPassage(): Promise<void> {
+    const result = await coachController.editCurrentPassage(
+      async () => {
+        coachMode = "write";
+        await tick();
+      },
+      (issue) => coachEditorHandle?.navigate(issue) ?? false,
+    );
+    coachNavigationStale = result === "stale";
+  }
+
+  function suppressCoachIssue(action: "dismiss" | "not-helpful"): void {
+    coachNavigationStale = false;
+    coachController.suppressCurrent(action);
+  }
 
   const citationEnv: CitationEnv = {
     refsById: untrack(() => library.byId()),
@@ -434,6 +506,10 @@
   }
 
   onMount(() => autosave.bindPersistence(persistence));
+  onDestroy(() => {
+    unsubscribeCoach();
+    coachController.destroy();
+  });
 
   async function leaveEditor(destination: () => void) {
     try {
@@ -795,6 +871,18 @@
     <div class="tb-title" data-tauri-drag-region>
       <span class="mark">T</span> <b>{essayTitle}</b>
     </div>
+    <div class="coach-mode" role="group" aria-label={m.writing_coach_mode_label()}>
+      <button
+        type="button"
+        aria-pressed={coachMode === "write"}
+        onclick={returnToWrite}
+      >{m.writing_coach_mode_write()}</button>
+      <button
+        type="button"
+        aria-pressed={coachMode === "study"}
+        onclick={() => void enterCoachStudy()}
+      >{m.writing_coach_mode_study()}</button>
+    </div>
     <div class="tb-actions">
       <button
         class="icon-btn"
@@ -819,7 +907,13 @@
         class:on={previewOpen}
         onclick={() => {
           previewOpen = !previewOpen;
-          if (previewOpen) previewPageCount = 0;
+          if (previewOpen) {
+            coachController.leaveStudy();
+            coachMode = "write";
+            coachNavigationStale = false;
+            coachEditorHandle?.clearHighlight();
+            previewPageCount = 0;
+          }
         }}
         title={m.tb_preview()}
         aria-label={m.tb_preview()}
@@ -837,8 +931,22 @@
     </div>
   </header>
 
-  <div class="shell">
-    <aside class="outline">
+  {#if coachMode === "write"}
+    <div
+      class="coach-write-status"
+      data-coach-write-status
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
+    >{coachNavigationStale ? m.writing_coach_status_stale() : ""}</div>
+  {/if}
+
+  <div class="shell" class:study-mode={coachMode === "study"}>
+    <aside
+      class="outline"
+      aria-hidden={coachMode === "study"}
+      inert={coachMode === "study"}
+    >
       <div class="panel-head">
         <h4>{m.outline_title()}</h4>
         <div
@@ -948,7 +1056,25 @@
           {/key}
         </div>
       {:else}
-        <div class="paper-fit-viewport">
+        {#if coachMode === "study"}
+          <WritingCoachStudy
+            state={coachState}
+            stale={coachNavigationStale}
+            onPrevious={() => coachController.previousIssue()}
+            onNext={() => coachController.nextIssue()}
+            onDismiss={() => suppressCoachIssue("dismiss")}
+            onNotHelpful={() => suppressCoachIssue("not-helpful")}
+            onEditPassage={() => void editCoachPassage()}
+            onHeadingReady={(element) => (coachHeading = element)}
+          />
+        {/if}
+        <div
+          class="paper-fit-viewport"
+          class:coach-hidden={coachMode === "study"}
+          data-write-workspace
+          aria-hidden={coachMode === "study"}
+          inert={coachMode === "study"}
+        >
           <div
             class="paper-scale-outer"
             data-paper-scale={paperLayout.scale}
@@ -982,6 +1108,7 @@
                 onReady={handleReady}
                 onEditEquation={(pos, latex) =>
                   (equationDialog = { mode: "edit", pos, latex })}
+                {coachBridge}
               />
             </div>
           </div>
@@ -989,7 +1116,11 @@
       {/if}
     </main>
 
-    <aside class="refs">
+    <aside
+      class="refs"
+      aria-hidden={coachMode === "study"}
+      inert={coachMode === "study"}
+    >
       <div class="panel-head">
         <h4>{referencesLabel}</h4>
         <div class="panel-head-actions">
@@ -1044,7 +1175,7 @@
     </aside>
   </div>
 
-  {#if !previewOpen}
+  {#if !previewOpen && coachMode === "write"}
     <Toolbar
       dock={uiLocale.dock}
       onDockChange={(next) => uiLocale.setDock(next)}
@@ -1249,7 +1380,7 @@
     </Toolbar>
   {/if}
 
-  {#if bubble && !previewOpen}
+  {#if bubble && !previewOpen && coachMode === "write"}
     <div class="bubble show" style="left: {bubble.x}px; top: {bubble.y}px">
       <button class="bb" style="font-weight: 700" onclick={() => editor?.chain().focus().toggleBold().run()} aria-label={m.toolbar_bold()}>B</button>
       <button class="bb it" onclick={() => editor?.chain().focus().toggleItalic().run()} aria-label={m.toolbar_italic()}>I</button>
@@ -1530,7 +1661,7 @@
     height: 40px;
     flex: 0 0 40px;
     display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    grid-template-columns: 1fr minmax(0, auto) auto 1fr;
     align-items: center;
     padding: 0 var(--sp-3);
     background: var(--chrome);
@@ -1566,6 +1697,51 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+  }
+
+  .coach-mode {
+    display: inline-flex;
+    justify-self: center;
+    margin-inline: var(--sp-4);
+    padding: 2px;
+    border: 1px solid var(--border);
+    border-radius: var(--r-pill);
+    background: var(--canvas);
+  }
+
+  .coach-mode button {
+    min-height: 26px;
+    border: 0;
+    border-radius: var(--r-pill);
+    background: transparent;
+    color: var(--muted);
+    padding: 2px 10px;
+    font: inherit;
+    font-size: var(--t-caption);
+    font-weight: 600;
+    cursor: pointer;
+  }
+
+  .coach-mode button[aria-pressed="true"] {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+  }
+
+  .coach-mode button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  .coach-write-status {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border: 0;
   }
 
   .mark {
@@ -1622,6 +1798,15 @@
     display: grid;
     grid-template-columns: var(--outline-w) 1fr var(--refs-w);
     transition: grid-template-columns 220ms var(--ease);
+  }
+
+  .shell.study-mode {
+    grid-template-columns: 1fr;
+  }
+
+  .shell.study-mode .outline,
+  .shell.study-mode .refs {
+    display: none;
   }
 
   .outline {
@@ -1847,6 +2032,10 @@
 
   .paper-fit-viewport {
     width: 100%;
+  }
+
+  .coach-hidden {
+    display: none;
   }
 
   /* The stacked page-sheets: the cover plus one sheet per document section
@@ -2139,5 +2328,58 @@
     font-size: var(--t-h3);
     line-height: 1;
     padding: 0 var(--sp-05);
+  }
+
+  @media (max-width: 600px) {
+    .titlebar {
+      grid-template-columns: auto 1fr auto;
+      padding-inline: var(--sp-1);
+    }
+
+    .tb-title {
+      display: none;
+    }
+
+    .traffic-space {
+      width: 0;
+    }
+
+    .coach-mode {
+      margin-inline: var(--sp-1);
+    }
+
+    .coach-mode button {
+      padding-inline: var(--sp-2);
+      white-space: nowrap;
+    }
+
+    .tb-actions button:nth-child(1),
+    .tb-actions button:nth-child(2) {
+      display: none;
+    }
+
+    .canvas {
+      padding-inline: var(--sp-2);
+    }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .canvas {
+      scroll-behavior: auto;
+    }
+
+    .shell,
+    .outline,
+    .refs,
+    .bar > span,
+    .out-item,
+    .icon-btn,
+    .statusbar {
+      transition: none;
+    }
+
+    .bubble.show {
+      animation: none;
+    }
   }
 </style>

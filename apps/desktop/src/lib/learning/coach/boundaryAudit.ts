@@ -8,37 +8,65 @@ export interface BoundaryFinding {
   token: string;
 }
 
-function relativeImports(source: string): string[] {
+function importSpecifiers(source: string): string[] {
   const imports: string[] = [];
   const pattern =
     /(?:\b(?:import|export)\s+(?:[^"']*?\s+from\s+)?["']([^"']+)["']|\bimport\s*\(\s*["']([^"']+)["']\s*\))/gu;
   for (const match of source.matchAll(pattern)) {
     const specifier = match[1] ?? match[2];
-    if (specifier?.startsWith(".")) imports.push(specifier);
+    if (specifier) imports.push(specifier);
   }
   return imports;
 }
 
-function resolveRelative(
-  importer: string,
-  specifier: string,
+function resolveSourcePath(
+  resolved: string,
   paths: ReadonlySet<string>,
 ): string | null {
-  const resolved = new URL(specifier, `file://${importer}`).pathname;
   const candidates = [
     resolved,
     `${resolved}.ts`,
     `${resolved}.tsx`,
+    `${resolved}.js`,
+    `${resolved}.svelte`,
     `${resolved}/index.ts`,
     `${resolved}/index.tsx`,
+    `${resolved}/index.js`,
+    `${resolved}/index.svelte`,
   ];
   return candidates.find((candidate) => paths.has(candidate)) ?? null;
+}
+
+function resolveProductionImport(
+  importer: string,
+  specifier: string,
+  paths: ReadonlySet<string>,
+  aliases: Readonly<Record<string, string>>,
+): string | null | undefined {
+  if (specifier.startsWith(".")) {
+    return resolveSourcePath(
+      new URL(specifier, `file://${importer}`).pathname,
+      paths,
+    );
+  }
+  const alias = Object.entries(aliases).find(([prefix]) =>
+    specifier.startsWith(prefix)
+  );
+  if (!alias) return undefined;
+  const [prefix, root] = alias;
+  const rootUrl = `file://${root.endsWith("/") ? root : `${root}/`}`;
+  return resolveSourcePath(
+    new URL(specifier.slice(prefix.length), rootUrl).pathname,
+    paths,
+  );
 }
 
 export function auditProductionImports(
   files: readonly SourceFile[],
   entryPoints: readonly string[],
   forbiddenTokens: readonly string[],
+  aliases: Readonly<Record<string, string>> = {},
+  leafPaths: ReadonlySet<string> = new Set(),
 ): BoundaryFinding[] {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const paths = new Set(byPath.keys());
@@ -58,8 +86,15 @@ export function auditProductionImports(
     for (const token of forbiddenTokens) {
       if (file.source.includes(token)) findings.push({ path, token });
     }
-    for (const specifier of relativeImports(file.source)) {
-      const resolved = resolveRelative(path, specifier, paths);
+    if (leafPaths.has(path)) continue;
+    for (const specifier of importSpecifiers(file.source)) {
+      const resolved = resolveProductionImport(
+        path,
+        specifier,
+        paths,
+        aliases,
+      );
+      if (resolved === undefined) continue;
       if (resolved === null) {
         findings.push({ path, token: `unresolved-import:${specifier}` });
       } else {

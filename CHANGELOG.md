@@ -5,6 +5,14 @@ and [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.24] - 2026-09-13
+
+### Added
+
+- A local English and Spanish Study workspace offers deterministic,
+  question-led writing feedback without changing the paper automatically or
+  acting as APA authority.
+
 ## [0.1.23] - 2026-09-13
 
 ### Security
@@ -353,7 +361,8 @@ and [Semantic Versioning](https://semver.org/).
 - Improved the reliability of installing updates and showing release notes
   after restart.
 
-[Unreleased]: https://github.com/adominicci/tesina/compare/v0.1.23...HEAD
+[Unreleased]: https://github.com/adominicci/tesina/compare/v0.1.24...HEAD
+[0.1.24]: https://github.com/adominicci/tesina/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/adominicci/tesina/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/adominicci/tesina/compare/v0.1.21...v0.1.22
 [0.1.21]: https://github.com/adominicci/tesina/compare/v0.1.20...v0.1.21

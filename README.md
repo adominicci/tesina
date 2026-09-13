@@ -8,7 +8,7 @@ in APA 7 style. It runs without an account, and your papers remain on your
 computer. The interface and each document can use English or Spanish
 independently.
 
-Version 0.1.23 supports student papers on macOS 12 or newer, and ships an
+Version 0.1.24 supports student papers on macOS 12 or newer, and ships an
 experimental Windows 10 or newer build. Both are distributed through GitHub
 Releases, not through an app store. Linux is not currently a supported or
 CI-built release target, although its implementation remains in the source.
@@ -50,6 +50,10 @@ attached to each release for administrators who prefer it.
   appendices, lists, tables, figures, equations, citations, and references.
 - Flows the paper automatically across US Letter pages as you write.
 - Formats in-text citations and reference entries in English or Spanish.
+- Offers deterministic English and Spanish writing feedback in a dedicated
+  Study workspace. It asks questions about the current passage. It never
+  rewrites the paper automatically and does not replace instructor or APA
+  guidance.
 - Manages a reusable reference library with collections, DOI, ISBN, and URL
   autofill, plus BibTeX import with a review step.
 - Provides a paged preview and exports `.docx` files for Microsoft Word and

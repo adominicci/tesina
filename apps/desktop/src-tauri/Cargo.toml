@@ -1,6 +1,6 @@
 [package]
 name = "tesina"
-version = "0.1.23"
+version = "0.1.24"
 description = "Tesina: APA 7 academic writing app"
 authors = ["Andres Dominicci and Tesina contributors"]
 license = "MIT"

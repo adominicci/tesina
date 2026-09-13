@@ -8,6 +8,7 @@
   import type { ReferenceDecorationEnv } from "$lib/editor/referenceDecoration";
   import type { PaginationEnvironment } from "$lib/editor/pagination/types";
   import type { PositionedApaIssue } from "$lib/editor/apaCheck";
+  import type { CoachEditorBridge } from "$lib/learning/coachExperience/editorPlugin";
   import "$lib/editor/apa.css";
 
   interface Props {
@@ -22,6 +23,7 @@
     onReady?: (editor: Editor) => void;
     onLaunchConsumed?: () => void;
     onEditEquation?: (pos: number, latex: string) => void;
+    coachBridge?: CoachEditorBridge;
   }
 
   let {
@@ -36,6 +38,7 @@
     onReady,
     onLaunchConsumed,
     onEditEquation,
+    coachBridge,
   }: Props = $props();
 
   const mountEditor: Attachment<HTMLDivElement> = (element) => {
@@ -50,6 +53,7 @@
         onUpdate,
         onApaIssues,
         onEditEquation,
+        coachBridge,
       });
       onReady?.(instance);
       if (newlyCreated) onLaunchConsumed?.();

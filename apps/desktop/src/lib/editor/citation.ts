@@ -1,5 +1,5 @@
 import { type Editor, Node } from "@tiptap/core";
-import { Plugin, PluginKey } from "@tiptap/pm/state";
+import { type EditorState, Plugin, PluginKey } from "@tiptap/pm/state";
 import type { Node as PMNode } from "@tiptap/pm/model";
 import {
   buildCitationContext,
@@ -29,11 +29,40 @@ interface CitationPluginState {
   /** Document position of the first citation node mentioning each refId. */
   firstOccurrenceAt: ReadonlyMap<string, number>;
   version: number;
+  environmentVersion: number;
+  environmentKey: string;
 }
 
 export const citationPluginKey = new PluginKey<CitationPluginState>(
   "tesinaCitations",
 );
+
+export function citationEnvironmentVersion(state: EditorState): number {
+  return citationPluginKey.getState(state)?.environmentVersion ?? 0;
+}
+
+export function renderCitationText(
+  state: EditorState,
+  env: CitationEnv,
+  node: PMNode,
+  position: number,
+): string {
+  const pluginState = citationPluginKey.getState(state);
+  if (!pluginState || node.type.name !== "citation") return "";
+  const attrs = node.attrs as CitationAttrs;
+  const firstOccurrenceRefIds = new Set(
+    attrs.items.map((item) => item.refId).filter((refId) =>
+      pluginState.firstOccurrenceAt.get(refId) === position
+    ),
+  );
+  return plainText(formatCitation(
+    attrs,
+    pluginState.ctx,
+    env.refsById,
+    env.locale,
+    { firstOccurrenceRefIds },
+  ));
+}
 
 function collectCitations(
   doc: PMNode,
@@ -52,6 +81,7 @@ function computeState(
   doc: PMNode,
   env: CitationEnv,
   version: number,
+  environmentVersion = 0,
 ): CitationPluginState {
   const citations = collectCitations(doc);
   const firstOccurrenceAt = new Map<string, number>();
@@ -67,7 +97,13 @@ function computeState(
     env.refsById,
     env.locale,
   );
-  return { ctx, firstOccurrenceAt, version };
+  return {
+    ctx,
+    firstOccurrenceAt,
+    version,
+    environmentVersion,
+    environmentKey: JSON.stringify(citations.map(({ attrs }) => attrs)),
+  };
 }
 
 function renderRuns(target: HTMLElement, runs: RichRun[]): void {
@@ -141,7 +177,19 @@ export function createCitationExtension(env: CitationEnv) {
             init: (_config, state) => computeState(state.doc, env, 0),
             apply: (tr, prev) => {
               if (!tr.docChanged && !tr.getMeta("apa:external")) return prev;
-              return computeState(tr.doc, env, prev.version + 1);
+              const next = computeState(
+                tr.doc,
+                env,
+                prev.version + 1,
+                prev.environmentVersion,
+              );
+              return {
+                ...next,
+                environmentVersion: tr.getMeta("apa:external") ||
+                    next.environmentKey !== prev.environmentKey
+                  ? prev.environmentVersion + 1
+                  : prev.environmentVersion,
+              };
             },
           },
         }),

@@ -17,6 +17,10 @@ import {
   createApaCheckExtension,
   type PositionedApaIssue,
 } from "./apaCheck.ts";
+import {
+  type CoachEditorBridge,
+  createCoachEditorExtension,
+} from "$lib/learning/coachExperience/editorPlugin.ts";
 
 export interface CreateEditorArgs {
   element: HTMLElement;
@@ -37,6 +41,8 @@ export interface CreateEditorArgs {
    * its pencil menu. External callback threaded into the schema, same shape
    * as `citationEnv`: the app layer owns the dialog, the node view doesn't. */
   onEditEquation?: (pos: number, latex: string) => void;
+  /** Optional schema-free deterministic Study bridge owned by EditorScreen. */
+  coachBridge?: CoachEditorBridge;
 }
 
 export function countWords(doc: PMNode): number {
@@ -62,6 +68,7 @@ export function createTesinaEditor(
     onUpdate,
     onApaIssues,
     onEditEquation,
+    coachBridge,
   }: CreateEditorArgs,
 ): Editor {
   return new Editor({
@@ -80,6 +87,9 @@ export function createTesinaEditor(
       ...blockExtensions,
       createApaEquationExtension(onEditEquation ?? (() => {})),
       createCitationExtension(citationEnv),
+      ...(coachBridge
+        ? [createCoachEditorExtension(coachBridge, citationEnv)]
+        : []),
       ApaPresentationDecoration,
       createReferenceDecorationExtension(referenceEnv),
       ...(paginationEnv ? [createPaginationExtension(paginationEnv)] : []),

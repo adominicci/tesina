@@ -226,19 +226,13 @@ impl OwnedChild {
     pub fn alive(&mut self) -> bool {
         unsafe { WaitForSingleObject(self.process.0, 0) == WAIT_TIMEOUT }
     }
-    #[cfg(feature = "local-ai-proof")]
-    pub async fn proof_transport_error(
+    pub async fn transport_error(
         &mut self,
-        site: u8,
+        _site: u8,
         deadline: tokio::time::Instant,
     ) -> ErrorCode {
         let initial = unsafe { WaitForSingleObject(self.process.0, 0) };
-        // Freeze the original policy BEFORE any observation can let exit progress.
-        let original = if initial == WAIT_TIMEOUT {
-            ErrorCode::InvalidResponse
-        } else {
-            ErrorCode::Crash
-        };
+        #[cfg(feature = "local-ai-proof")]
         let state = |value| {
             if value == WAIT_TIMEOUT {
                 1
@@ -248,13 +242,15 @@ impl OwnedChild {
                 3
             }
         };
+        #[cfg(feature = "local-ai-proof")]
         let mut observation = ProofTransition {
-            site,
+            site: _site,
             initial: state(initial),
             eventual: 3,
             elapsed_ms: 0,
             exit_code: None,
         };
+        let mut settled = initial;
         let duplicate = unsafe {
             let mut raw = HANDLE::default();
             let duplicated = DuplicateHandle(
@@ -269,36 +265,61 @@ impl OwnedChild {
             duplicated.ok().map(|_| Handle(raw))
         };
         if let Some(duplicate) = duplicate {
+            // Windows closes sockets before signalling process exit. Settle only
+            // a transport failure, using this exact owned handle and admission deadline.
             let waited = tokio::task::spawn_blocking(move || {
                 let duplicate = duplicate; // Move the Send owner, not a captured raw HANDLE field.
+                #[cfg(feature = "local-ai-proof")]
                 let started = std::time::Instant::now();
                 let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
                 let milliseconds = remaining.as_millis().min(250) as u32;
                 let result = unsafe { WaitForSingleObject(duplicate.0, milliseconds) };
-                observation.eventual = state(result);
-                observation.elapsed_ms =
-                    started.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
-                if result == WAIT_OBJECT_0 {
-                    let mut code = 0;
-                    if unsafe { GetExitCodeProcess(duplicate.0, &mut code) }.is_ok() {
-                        observation.exit_code = Some(code);
+                #[cfg(feature = "local-ai-proof")]
+                {
+                    observation.eventual = state(result);
+                    observation.elapsed_ms =
+                        started.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+                    if result == WAIT_OBJECT_0 {
+                        let mut code = 0;
+                        if unsafe { GetExitCodeProcess(duplicate.0, &mut code) }.is_ok() {
+                            observation.exit_code = Some(code);
+                        }
+                    }
+                    return (result, observation);
+                }
+                #[cfg(not(feature = "local-ai-proof"))]
+                result
+            });
+            let waited = tokio::time::timeout_at(deadline, waited).await;
+            match waited {
+                Ok(Ok(value)) => {
+                    #[cfg(feature = "local-ai-proof")]
+                    {
+                        settled = value.0;
+                        observation = value.1;
+                    }
+                    #[cfg(not(feature = "local-ai-proof"))]
+                    {
+                        settled = value;
                     }
                 }
-                observation
-            })
-            .await;
-            if let Ok(value) = waited {
-                observation = value;
+                Err(_) => return ErrorCode::Timeout,
+                Ok(Err(_)) => {}
             }
         }
         // The worker never publishes. Dropping this future on cancel/deadline
         // discards its late measurement while its duplicate stays owned to exit.
+        #[cfg(feature = "local-ai-proof")]
         if tokio::time::Instant::now() < deadline {
             if let Ok(mut value) = TRANSITION.lock() {
                 *value = Some(observation);
             }
         }
-        original
+        if settled == WAIT_OBJECT_0 {
+            ErrorCode::Crash
+        } else {
+            ErrorCode::InvalidResponse
+        }
     }
     pub fn stop(&mut self) -> Result<(), ErrorCode> {
         // Kill-on-close containment also works when installation exits inside native code.

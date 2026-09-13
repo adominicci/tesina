@@ -94,11 +94,11 @@ async fn exchange(
 }
 
 async fn transport_error(child: &mut OwnedChild, _site: u8, _deadline: Instant) -> ErrorCode {
-    #[cfg(all(windows, feature = "local-ai-proof"))]
+    #[cfg(windows)]
     {
-        child.proof_transport_error(_site, _deadline).await
+        child.transport_error(_site, _deadline).await
     }
-    #[cfg(not(all(windows, feature = "local-ai-proof")))]
+    #[cfg(not(windows))]
     {
         if child.alive() {
             ErrorCode::InvalidResponse

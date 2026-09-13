@@ -210,7 +210,14 @@ export function createWritingCoachController(
           state.issues.length > 0 &&
           state.issues.every((issue) =>
             issue.generation === generation &&
-            currentSnapshot.passages.includes(issue.passage)
+            currentSnapshot.passages.some((passage) =>
+              passage.passageId === issue.passage.passageId &&
+              passage.revision === issue.passage.revision &&
+              passage.documentLanguage === issue.passage.documentLanguage &&
+              passage.citationEnvironmentVersion ===
+                issue.passage.citationEnvironmentVersion &&
+              passage.text === issue.passage.text
+            )
           );
         if (state.fixed === null && retainedIssuesAreCurrent) {
           setState({

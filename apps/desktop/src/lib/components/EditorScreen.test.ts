@@ -682,10 +682,12 @@ describe("Write and Study workspace modes", () => {
       new Response(null, { status: 204 }),
     );
 
-    const clickCoach = (label: string) => {
-      const action = [...document.querySelectorAll<HTMLButtonElement>(
+    const coachAction = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>(
         "button",
       )].find((item) => item.textContent?.trim() === label);
+    const clickCoach = (label: string) => {
+      const action = coachAction(label);
       if (!action) throw new Error(`missing coach action: ${label}`);
       action.click();
     };
@@ -699,12 +701,32 @@ describe("Write and Study workspace modes", () => {
       expect(document.querySelector(".writing-coach-source-emphasis"))
         .not.toBeNull()
     );
+    await tick();
     flushSync();
     clickCoach(m.writing_coach_mode_study());
-    await drainMicrotasks();
-    flushSync();
+    await vi.waitFor(
+      () => {
+        flushSync();
+        expect(coachAction(m.writing_coach_not_helpful())).toBeDefined();
+        expect(coachAction(m.writing_coach_dismiss())).toBeDefined();
+      },
+    );
     clickCoach(m.writing_coach_not_helpful());
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector("[data-coach-count]")?.textContent).toBe(
+        m.writing_coach_position({ position: 1, total: 1 }),
+      );
+      expect(coachAction(m.writing_coach_dismiss())).toBeDefined();
+    });
     clickCoach(m.writing_coach_dismiss());
+    await vi.waitFor(() => {
+      flushSync();
+      expect(document.querySelector(
+        '[data-coach-state][data-state="no-current-issues"]',
+      ))
+        .not.toBeNull();
+    });
     clickCoach(m.writing_coach_mode_write());
     await tick();
 

@@ -438,6 +438,32 @@ describe("fixed question-led sessions", () => {
     controller.destroy();
   });
 
+  it("restores Study after navigating a harmlessly mapped current issue", async () => {
+    vi.useFakeTimers();
+    const controller = createWritingCoachController("essay-1");
+    controller.updateSnapshot(snapshot(1));
+    controller.enterStudy();
+    await vi.advanceTimersByTimeAsync(0);
+    const initial = controller.getState();
+    if (initial.status !== "issues") throw new Error("expected issues");
+
+    controller.mapFixedSource(
+      new Mapping(),
+      () => initial.fixed.issue.issue.observedText,
+      1,
+    );
+    expect(
+      await controller.editCurrentPassage(() => {}, () => true),
+    ).toBe("navigated");
+
+    controller.enterStudy();
+    expect(controller.getState().status).toBe("issues");
+    expect(controller.getState().fixed?.issue).toBe(
+      controller.getState().issues[0],
+    );
+    controller.destroy();
+  });
+
   it("rebinds refreshed navigation to a matching current issue or the first visible issue", async () => {
     vi.useFakeTimers();
     const controller = createWritingCoachController("essay-1");

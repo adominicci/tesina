@@ -68,13 +68,26 @@ export function readLocalAiWebviewCapture(stdout: string, stderr: string) {
     } catch {
       /* Diagnose independently; never accept or publish the payload. */
     }
-    // Exact fixed host fallback only; variable Wry/OS messages remain unknown.
+    // Pattern evidence only, never verified origin; OS text is never published.
+    const postMessage = stderr.length <= 512
+      ? /^PostMessage failed ; is the messages queue full\? Error code (0x[0-9A-F]{8}) - [^\p{C}\u2028\u2029]{1,256}\r?\n(?![\s\S])/u
+        .exec(stderr)
+      : null;
+    const postMessageKind = postMessage?.[1] === "0x80070578"
+      ? "wry-postmessage-pattern-invalid-window"
+      : postMessage?.[1] === "0x80070006"
+      ? "wry-postmessage-pattern-invalid-handle"
+      : postMessage?.[1] === "0x80070718"
+      ? "wry-postmessage-pattern-quota"
+      : "wry-postmessage-pattern-other";
     const nativeNoReport =
       "local-ai-webview-proof: no successful native report";
     const stderrKind = stderr === ""
       ? "empty"
       : stderr === `${nativeNoReport}\n` || stderr === `${nativeNoReport}\r\n`
       ? "native-no-report"
+      : postMessage
+      ? postMessageKind
       : "unknown";
     console.error(JSON.stringify({
       proof: "local-ai-webview-capture-failure-v1",

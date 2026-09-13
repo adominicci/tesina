@@ -26,6 +26,57 @@ const passing = {
 
 afterEach(() => vi.restoreAllMocks());
 describe("primary WebView failure diagnostic", () => {
+  it("identifies a complete PostMessage pattern without publishing OS text", () => {
+    const publish = vi.spyOn(console, "error").mockImplementation(() => {});
+    const stdout = JSON.stringify(passing);
+    const stderr =
+      "PostMessage failed ; is the messages queue full? Error code 0x80070578 - OS_MESSAGE_CANARY\n";
+    expect(() => readLocalAiWebviewCapture(stdout, stderr)).toThrow(
+      "local-ai-proof-failed",
+    );
+    expect(publish).toHaveBeenCalledExactlyOnceWith(JSON.stringify({
+      proof: "local-ai-webview-capture-failure-v1",
+      stdoutCodeUnits: stdout.length,
+      stderrCodeUnits: stderr.length,
+      stdoutSchemaValid: true,
+      stderrKind: "wry-postmessage-pattern-invalid-window",
+    }));
+    expect(JSON.stringify(publish.mock.calls)).not.toContain("CANARY");
+  });
+  it("keeps code categories closed and extra or control output unknown", () => {
+    const publish = vi.spyOn(console, "error").mockImplementation(() => {});
+    const prefix =
+      "PostMessage failed ; is the messages queue full? Error code ";
+    const valid = `${prefix}0x80070578 - OS_CANARY\n`;
+    for (
+      const [stderr, kind] of [
+        [
+          `${prefix}0x80070006 - OS_CANARY\r\n`,
+          "wry-postmessage-pattern-invalid-handle",
+        ],
+        [`${prefix}0x80070718 - OS_CANARY\n`, "wry-postmessage-pattern-quota"],
+        [`${prefix}0x8007ABCD - OS_CANARY\n`, "wry-postmessage-pattern-other"],
+        [`PREFIX_CANARY${valid}`, "unknown"],
+        [`${valid}SUFFIX_CANARY`, "unknown"],
+        [`${valid}\n`, "unknown"],
+        [`${valid}${valid}`, "unknown"],
+        [valid.replace("OS_CANARY", "OS\u001bCANARY"), "unknown"],
+        [valid.replace("OS_CANARY", "OS\u2028CANARY"), "unknown"],
+        [valid.replace("OS_CANARY", "X".repeat(257)), "unknown"],
+        [valid.replace("0x80070578", "0x8007abcd"), "unknown"],
+        [valid.slice(0, -1), "unknown"],
+      ]
+    ) {
+      publish.mockClear();
+      expect(() => readLocalAiWebviewCapture(JSON.stringify(passing), stderr))
+        .toThrow("local-ai-proof-failed");
+      expect(JSON.parse(String(publish.mock.calls[0][0])).stderrKind).toBe(
+        kind,
+      );
+      expect(JSON.stringify(publish.mock.calls)).not.toContain("CANARY");
+      expect(publish).toHaveBeenCalledTimes(1);
+    }
+  });
   it("still rejects stderr while reporting valid stdout without its payload", () => {
     const publish = vi.spyOn(console, "error").mockImplementation(() => {});
     const stdout = JSON.stringify(passing);

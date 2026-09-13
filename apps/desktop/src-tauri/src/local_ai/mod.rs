@@ -10,6 +10,8 @@ mod schema;
 mod socket;
 mod state;
 pub use process::guardian_entry;
+#[cfg(all(windows, feature = "local-ai-proof"))]
+pub use process::proof_startup_snapshot;
 pub use state::Service;
 
 #[tauri::command]

@@ -9,6 +9,8 @@ mod platform;
 #[cfg(windows)]
 #[path = "job_windows.rs"]
 mod platform;
+#[cfg(all(windows, feature = "local-ai-proof"))]
+pub use platform::proof_startup_snapshot;
 #[cfg(any(target_os = "macos", windows))]
 pub use platform::{guardian_entry, OwnedChild};
 

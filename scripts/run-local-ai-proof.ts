@@ -105,10 +105,17 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
   }
   if (
     !value || typeof value !== "object" || Array.isArray(value) ||
-    Object.keys(value).length !== 5 ||
+    Object.keys(value).length !== 10 ||
     value.proof !== "local-ai-native-panic-v1" ||
     !Number.isInteger(value.phase) || value.phase < 0 || value.phase > 11 ||
     !Number.isInteger(value.source) || value.source < 0 || value.source > 7 ||
+    !Number.isInteger(value.result) || value.result < 0 || value.result > 15 ||
+    typeof value.childStarted !== "boolean" ||
+    typeof value.fixtureMarker !== "boolean" ||
+    !Number.isInteger(value.windowsStage) || value.windowsStage < 0 ||
+    value.windowsStage > 11 ||
+    !Number.isInteger(value.windowsCode) || value.windowsCode < -2147483648 ||
+    value.windowsCode > 2147483647 ||
     ![value.line, value.column].every((n) =>
       Number.isInteger(n) && n >= 0 && n <= 4294967295
     )
@@ -121,6 +128,11 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
       source: value.source,
       line: value.line,
       column: value.column,
+      result: value.result,
+      childStarted: value.childStarted,
+      fixtureMarker: value.fixtureMarker,
+      windowsStage: value.windowsStage,
+      windowsCode: value.windowsCode,
     },
   };
 }

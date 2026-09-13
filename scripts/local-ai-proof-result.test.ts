@@ -31,6 +31,11 @@ describe("local inference native proof result", () => {
       source: 1,
       line: 400,
       column: 5,
+      result: 3,
+      childStarted: false,
+      fixtureMarker: false,
+      windowsStage: 10,
+      windowsCode: -2147024894,
     };
     expect(readLocalAiNativeFailure(JSON.stringify(diagnostic), 101)).toEqual({
       exitCode: 101,
@@ -44,6 +49,11 @@ describe("local inference native proof result", () => {
         { column: 0.5 },
         { payload: "SOURCE_CANARY" },
         { source: "/private/paper" },
+        { result: 20 },
+        { childStarted: 1 },
+        { fixtureMarker: "false" },
+        { windowsStage: 12 },
+        { windowsCode: 2147483648 },
       ]
     ) {
       expect(() =>

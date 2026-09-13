@@ -8,6 +8,33 @@ use windows::Win32::{
     System::{JobObjects::*, Threading::*},
 };
 
+#[cfg(feature = "local-ai-proof")]
+static STARTUP_SNAPSHOT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+#[cfg(feature = "local-ai-proof")]
+pub fn proof_startup_snapshot() -> (u8, i32) {
+    let value = STARTUP_SNAPSHOT.load(std::sync::atomic::Ordering::SeqCst);
+    ((value >> 32) as u8, value as u32 as i32)
+}
+macro_rules! startup_stage {
+    ($stage:expr) => {
+        #[cfg(feature = "local-ai-proof")]
+        STARTUP_SNAPSHOT.store(($stage as u64) << 32, std::sync::atomic::Ordering::SeqCst);
+    };
+}
+macro_rules! startup_error {
+    ($stage:expr) => {
+        |error: windows::core::Error| {
+            #[cfg(feature = "local-ai-proof")]
+            STARTUP_SNAPSHOT.store(
+                (($stage as u64) << 32) | error.code().0 as u32 as u64,
+                std::sync::atomic::Ordering::SeqCst,
+            );
+            let _ = error;
+            ErrorCode::StartupFailed
+        }
+    };
+}
+
 struct Handle(HANDLE);
 unsafe impl Send for Handle {}
 impl Drop for Handle {
@@ -28,28 +55,30 @@ impl OwnedChild {
         key: &str,
         cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
     ) -> Result<Self, ErrorCode> {
+        startup_stage!(1);
         launch.verify()?;
         if cancellation.is_some_and(|signal| *signal.borrow()) {
             return Err(ErrorCode::Cancelled);
         }
         unsafe {
-            let job = Handle(
-                CreateJobObjectW(None, PCWSTR::null()).map_err(|_| ErrorCode::StartupFailed)?,
-            );
+            startup_stage!(2);
+            let job = Handle(CreateJobObjectW(None, PCWSTR::null()).map_err(startup_error!(2))?);
             let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
             limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            startup_stage!(3);
             SetInformationJobObject(
                 job.0,
                 JobObjectExtendedLimitInformation,
                 (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
                 std::mem::size_of_val(&limits) as u32,
             )
-            .map_err(|_| ErrorCode::StartupFailed)?;
+            .map_err(startup_error!(3))?;
             let attributes = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: std::ptr::null_mut(),
                 bInheritHandle: true.into(),
             };
+            startup_stage!(4);
             let nul = Handle(
                 CreateFileW(
                     windows::core::w!("NUL"),
@@ -60,17 +89,19 @@ impl OwnedChild {
                     FILE_ATTRIBUTE_NORMAL,
                     None,
                 )
-                .map_err(|_| ErrorCode::StartupFailed)?,
+                .map_err(startup_error!(4))?,
             );
             let mut size = 0;
+            startup_stage!(5);
             let _ = InitializeProcThreadAttributeList(None, 2, None, &mut size);
             if size == 0 || size > 64 * 1024 {
                 return Err(ErrorCode::StartupFailed);
             }
             let mut storage = vec![0usize; size.div_ceil(std::mem::size_of::<usize>())];
             let list = LPPROC_THREAD_ATTRIBUTE_LIST(storage.as_mut_ptr().cast());
+            startup_stage!(6);
             InitializeProcThreadAttributeList(Some(list), 2, None, &mut size)
-                .map_err(|_| ErrorCode::StartupFailed)?;
+                .map_err(startup_error!(6))?;
             struct Attributes(LPPROC_THREAD_ATTRIBUTE_LIST);
             impl Drop for Attributes {
                 fn drop(&mut self) {
@@ -80,6 +111,7 @@ impl OwnedChild {
             let _attributes = Attributes(list);
             let jobs = [job.0];
             let handles = [nul.0];
+            startup_stage!(7);
             UpdateProcThreadAttribute(
                 list,
                 0,
@@ -89,7 +121,8 @@ impl OwnedChild {
                 None,
                 None,
             )
-            .map_err(|_| ErrorCode::StartupFailed)?;
+            .map_err(startup_error!(7))?;
+            startup_stage!(8);
             UpdateProcThreadAttribute(
                 list,
                 0,
@@ -99,7 +132,7 @@ impl OwnedChild {
                 None,
                 None,
             )
-            .map_err(|_| ErrorCode::StartupFailed)?;
+            .map_err(startup_error!(8))?;
             let mut info = STARTUPINFOEXW::default();
             info.StartupInfo.cb = std::mem::size_of::<STARTUPINFOEXW>() as u32;
             info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
@@ -121,6 +154,7 @@ impl OwnedChild {
                 .encode_wide()
                 .chain(Some(0))
                 .collect();
+            startup_stage!(9);
             let mut args = vec![quote(launch.executable.path.as_os_str())?];
             args.extend(FLAGS.iter().map(|s| s.to_string()));
             args.push("--model".into());
@@ -129,6 +163,7 @@ impl OwnedChild {
             // A fresh explicit Unicode environment block; no proxy/library/MCP inheritance.
             let environment: Vec<u16> = format!("LLAMA_API_KEY={key}\0\0").encode_utf16().collect();
             let mut process = PROCESS_INFORMATION::default();
+            startup_stage!(10);
             CreateProcessW(
                 PCWSTR(executable.as_ptr()),
                 Some(PWSTR(command.as_mut_ptr())),
@@ -141,7 +176,8 @@ impl OwnedChild {
                 &info.StartupInfo,
                 &mut process,
             )
-            .map_err(|_| ErrorCode::StartupFailed)?;
+            .map_err(startup_error!(10))?;
+            startup_stage!(11);
             let _thread = Handle(process.hThread);
             Ok(Self {
                 job: Some(job),

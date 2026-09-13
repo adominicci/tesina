@@ -6,6 +6,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 // Nonshipping diagnostics: fixed IDs only, never panic payloads or paths.
 static FAILURE_PHASE: AtomicU8 = AtomicU8::new(0);
 static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+static FAILURE_RESULT: AtomicU8 = AtomicU8::new(0);
+static CHILD_STARTED: AtomicBool = AtomicBool::new(false);
+static FIXTURE_MARKER: AtomicBool = AtomicBool::new(false);
 fn diagnostic_hook() {
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
@@ -29,9 +32,19 @@ fn diagnostic_hook() {
                 .map_or(0, |i| i + 1);
             (source, location.line(), location.column())
         });
+        #[cfg(windows)]
+        let (windows_stage, windows_code) =
+            if (3..=7).contains(&FAILURE_PHASE.load(Ordering::SeqCst)) {
+                tesina_lib::local_ai::proof_startup_snapshot()
+            } else {
+                (0, 0)
+            };
+        #[cfg(not(windows))]
+        let (windows_stage, windows_code) = (0, 0);
         let _ = writeln!(std::io::stderr().lock(),
-            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column}}}",
-            FAILURE_PHASE.load(Ordering::SeqCst));
+            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column},\"result\":{},\"childStarted\":{},\"fixtureMarker\":{},\"windowsStage\":{windows_stage},\"windowsCode\":{windows_code}}}",
+            FAILURE_PHASE.load(Ordering::SeqCst), FAILURE_RESULT.load(Ordering::SeqCst),
+            CHILD_STARTED.load(Ordering::SeqCst), FIXTURE_MARKER.load(Ordering::SeqCst));
     }));
 }
 
@@ -425,6 +438,35 @@ async fn launch_integrity(executable: &std::path::Path) {
         .await
         .unwrap()
         .unwrap();
+    let category = match (result["status"].as_str(), result["error"].as_str()) {
+        (Some("ok"), _) => 1,
+        (Some("error"), Some(code)) => [
+            "unsupported-platform",
+            "unsupported-hardware",
+            "sidecar-absent",
+            "not-installed",
+            "busy",
+            "cancelled",
+            "invalid-request",
+            "invalid-response",
+            "startup-failed",
+            "timeout",
+            "out-of-memory",
+            "crash",
+            "shutting-down",
+        ]
+        .iter()
+        .position(|known| *known == code)
+        .map_or(15, |i| i as u8 + 2),
+        _ => 15,
+    };
+    FAILURE_RESULT.store(category, Ordering::SeqCst);
+    // Retained proof PID witnesses a successful start, not current liveness.
+    CHILD_STARTED.store(service.proof_child_pid().is_some(), Ordering::SeqCst);
+    FIXTURE_MARKER.store(
+        fixture.path().join("launch-attempted").exists(),
+        Ordering::SeqCst,
+    );
     FAILURE_PHASE.store(5, Ordering::SeqCst);
     service.prepare_shutdown().await.unwrap();
     FAILURE_PHASE.store(6, Ordering::SeqCst);
@@ -437,6 +479,9 @@ async fn launch_integrity(executable: &std::path::Path) {
         fixture.path().join("launch-attempted").exists(),
         "copied fake must attest actual execution"
     );
+    FAILURE_RESULT.store(0, Ordering::SeqCst);
+    CHILD_STARTED.store(false, Ordering::SeqCst);
+    FIXTURE_MARKER.store(false, Ordering::SeqCst);
     for mutation in [
         "missing-executable",
         "tampered-executable",
@@ -501,6 +546,9 @@ async fn launch_integrity(executable: &std::path::Path) {
         );
     }
     FAILURE_PHASE.store(0, Ordering::SeqCst);
+    FAILURE_RESULT.store(0, Ordering::SeqCst);
+    CHILD_STARTED.store(false, Ordering::SeqCst);
+    FIXTURE_MARKER.store(false, Ordering::SeqCst);
 }
 
 async fn crash_and_explicit_retry(executable: PathBuf) {

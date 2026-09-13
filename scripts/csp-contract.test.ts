@@ -65,14 +65,8 @@ describe("desktop CSP contract", () => {
     });
   });
 
-  it("keeps user-supplied HTTP URLs in the native plugin capability", () => {
-    const httpPermission = capability.permissions?.find((permission) =>
-      typeof permission === "object" && permission !== null &&
-      "identifier" in permission &&
-      permission.identifier === "http:default"
-    ) as { allow?: Array<{ url?: string }> } | undefined;
-    expect(httpPermission?.allow?.map((entry) => entry.url)).toEqual(
-      expect.arrayContaining(["https://*/*", "http://*/*"]),
-    );
+  it("does not grant generic HTTP authority to the webview", () => {
+    expect(capability.permissions).toBeDefined();
+    expect(JSON.stringify(capability.permissions)).not.toContain("http:");
   });
 });

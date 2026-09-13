@@ -30,6 +30,7 @@
   import { shutdown } from "$lib/state/shutdown.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { exit } from "@tauri-apps/plugin-process";
+  import { exitAfterInferenceShutdown, resumeLocalInference } from "$lib/local-ai/lifecycle";
   import Modal from "$lib/components/Modal.svelte";
 
   interface Props {
@@ -118,10 +119,13 @@
         // The whole process ends, not just this window: on Windows and Linux
         // a destroyed main window would leave the app running with nothing on
         // screen, and on macOS Quit has to mean Quit.
-        exitApp: () => exit(0),
+        exitApp: () => exitAfterInferenceShutdown(() => exit(0)),
         confirmQuit: () => askQuit("quit"),
         confirmQuitWithoutSaving: () => askQuit("unsaved"),
-        resumeAfterFailedShutdown: () => operations.resumeAfterFailedShutdown(),
+        resumeAfterFailedShutdown: async () => {
+          await operations.resumeAfterFailedShutdown();
+          await resumeLocalInference();
+        },
         onError,
       });
 

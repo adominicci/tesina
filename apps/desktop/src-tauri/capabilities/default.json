@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window: app-data file access, save/open dialogs, shutdown, and reference-autofill HTTP endpoints. `process:allow-exit` and `core:window:allow-hide` back the close button — neither is in a default set, and without them the close path is denied and silently does nothing. The wildcard http(s) scopes exist because URL autofill scrapes user-pasted pages (http kept for legacy academic sites); the CrossRef/OpenLibrary entries document the primary endpoints.",
+  "description": "Main window file/dialog/shutdown capabilities. Reference lookup uses the bounded native public-GET command; no generic HTTP plugin is registered or granted. The private native namespace remains denied.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -36,15 +36,6 @@
         "$APPDATA/.tesina-native/**",
         "$APPCACHE/.tesina-native",
         "$APPCACHE/.tesina-native/**"
-      ]
-    },
-    {
-      "identifier": "http:default",
-      "allow": [
-        { "url": "https://api.crossref.org/*" },
-        { "url": "https://openlibrary.org/*" },
-        { "url": "https://*/*" },
-        { "url": "http://*/*" }
       ]
     }
   ]

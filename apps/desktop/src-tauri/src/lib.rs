@@ -2,14 +2,28 @@
 mod backup_directory;
 #[cfg(not(feature = "packaged-spelling-proof"))]
 mod external_files;
+pub mod local_ai;
 #[cfg(feature = "packaged-backup-smoke")]
 mod packaged_backup_smoke;
+#[cfg(not(feature = "local-ai-proof"))]
+mod reference_fetch;
+#[cfg(feature = "local-ai-proof")]
+pub mod reference_fetch;
 pub mod spelling;
 // Public so the live proof example can drive the real command end to end.
 #[cfg(not(feature = "packaged-spelling-proof"))]
 pub mod pdf_export;
 
 use tauri::Manager;
+
+fn application_context() -> tauri::Context<tauri::Wry> {
+    tauri::generate_context!()
+}
+
+#[cfg(feature = "local-ai-proof")]
+pub fn local_ai_proof_context() -> tauri::Context<tauri::Wry> {
+    application_context()
+}
 
 /// The frontend needs the host operating system to follow its close
 /// convention: on macOS the close button hides the window and leaves the app
@@ -23,6 +37,9 @@ fn host_os() -> &'static str {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    if local_ai::guardian_entry() {
+        return;
+    }
     #[cfg(feature = "packaged-spelling-proof")]
     run_packaged_spelling_proof();
     #[cfg(not(feature = "packaged-spelling-proof"))]
@@ -40,7 +57,7 @@ fn run_packaged_spelling_proof() {
         .invoke_handler(tauri::generate_handler![
             spelling::proof::spelling_packaged_proof,
         ])
-        .build(tauri::generate_context!())
+        .build(application_context())
         .expect("error while building packaged spelling proof")
         .run(|_app, _event| {});
 }
@@ -65,7 +82,6 @@ fn run_application() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .setup(|app| {
@@ -77,11 +93,18 @@ fn run_application() {
             )?);
             app.manage(external_files::ExternalSaveAuthorizations::default());
             app.manage(spelling::SpellingState::new(app.handle().clone()));
+            app.manage(local_ai::Service::default());
             #[cfg(feature = "packaged-backup-smoke")]
             app.manage(packaged_backup_smoke::PackagedBackupSmokeState::default());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            local_ai::local_inference_capability,
+            local_ai::local_inference_run,
+            local_ai::local_inference_cancel,
+            local_ai::local_inference_prepare_shutdown,
+            local_ai::local_inference_resume,
+            reference_fetch::reference_fetch,
             backup_directory::backup_pick_and_begin_configuration,
             backup_directory::backup_write_test_archive,
             backup_directory::backup_activate_configuration,
@@ -123,9 +146,10 @@ fn run_application() {
             spelling::commands::spelling_cancel,
             host_os,
         ])
-        .build(tauri::generate_context!())
+        .build(application_context())
         .expect("error while building tauri application")
         .run(|_app, _event| {
+            handle_inference_exit(_app, &_event);
             // The macOS close button hides the main window instead of
             // destroying it, so the app stays in the Dock with no window on
             // screen. Clicking the Dock icon has to bring it back.
@@ -141,6 +165,30 @@ fn run_application() {
                 }
             }
         });
+}
+
+fn handle_inference_exit(app: &tauri::AppHandle, event: &tauri::RunEvent) {
+    if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+        let service = app.state::<local_ai::Service>();
+        if !service.shutdown_ready() {
+            api.prevent_exit();
+            let service = service.inner().clone();
+            let app = app.clone();
+            let code = code.unwrap_or(0);
+            tauri::async_runtime::spawn(async move {
+                if service.prepare_shutdown().await.is_ok() {
+                    app.exit(code);
+                } else {
+                    let _ = service.resume();
+                }
+            });
+        }
+    }
+}
+
+#[cfg(feature = "local-ai-proof")]
+pub fn proof_handle_inference_exit(app: &tauri::AppHandle, event: &tauri::RunEvent) {
+    handle_inference_exit(app, event);
 }
 
 #[cfg(all(test, not(feature = "packaged-backup-smoke")))]

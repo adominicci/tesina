@@ -7,13 +7,17 @@ import {
 
 describe("bundled release notes", () => {
   it("bundles the exact desktop package version from the canonical changelog", () => {
-    const expectedNotes = `### Added
+    const expectedNotes = `### Changed
 
-- A local English and Spanish Study workspace offers deterministic,
-  question-led writing feedback without changing the paper automatically or
-  acting as APA authority.`;
+- Add a dormant native boundary for optional local inference. No model download
+  or visible AI feature is enabled; runtime packaging and cross-platform
+  acceptance remain pending.
+- Reference autofill now uses bounded native public HTTP(S) retrieval instead
+  of unrestricted native HTTP access. Private/intranet and loopback addresses,
+  special-use destinations, and ports other than 80 or 443 are no longer
+  supported for reference lookup.`;
 
-    expect(bundledReleaseNotes.version).toBe("0.1.24");
+    expect(bundledReleaseNotes.version).toBe("0.1.25");
     expect(bundledReleaseNotes.version).toBe(desktopPackage.version);
     expect(bundledReleaseNotes.body).toBe(expectedNotes);
     expect(bundledReleaseNotes.body).not.toContain("## [0.1.2]");

@@ -70,7 +70,8 @@ describe("Windows native pagination host containment", () => {
         }),
         expect.objectContaining({
           name: "url",
-          kind: "dev",
+          // Shared with the native public-reference URL policy (LT-05).
+          kind: null,
           req: "=2.5.8",
         }),
         expect.objectContaining({

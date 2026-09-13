@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { mount, unmount } from "svelte";
+import { flushSync, mount, unmount } from "svelte";
 import type { Editor as TiptapEditor } from "@tiptap/core";
 import { afterEach, expect, it, vi } from "vitest";
 import type { Essay } from "$lib/model/essay";
@@ -125,6 +125,7 @@ afterEach(() => {
 });
 
 it("mounts the real EditorScreen with the selected compile-time spelling addon", async () => {
+  vi.useFakeTimers();
   runtime.capability.mockResolvedValue({
     status: "available",
     language: "en",
@@ -152,7 +153,8 @@ it("mounts the real EditorScreen with the selected compile-time spelling addon",
       onOpenLibrary: vi.fn(),
     },
   });
-  await new Promise((resolve) => setTimeout(resolve, 350));
+  flushSync();
+  await vi.advanceTimersByTimeAsync(350);
 
   expect(runtime.editors).toHaveLength(1);
   if (__TESINA_SPELLING_PROOF_TEST__) {

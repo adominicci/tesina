@@ -1,4 +1,4 @@
-import { fetch } from "@tauri-apps/plugin-http";
+import { invoke } from "@tauri-apps/api/core";
 import type { Reference } from "@tesina/engine";
 import { type CrossrefWork, mapCrossrefWork } from "./crossref.ts";
 import { mapOpenLibraryBook, type OpenLibraryBook } from "./openlibrary.ts";
@@ -19,24 +19,31 @@ export type AutofillResult =
   | { ok: true; ref: Reference }
   | { ok: false; error: AutofillError };
 
-const TIMEOUT_MS = 10_000;
 // Citation metadata lives in <head>; anything past this is never useful.
 // Enforced while streaming, so a pathological page is never buffered whole.
 const MAX_HTML_BYTES = 4_000_000;
-// TODO: add a mailto/URL for CrossRef's polite pool once the repo is public.
-// Deliberately no personal data in the UA string.
-const USER_AGENT = "Tesina/0.1 (academic writing app)";
+/** Destination, headers, redirects and the10s/4MB bounds belong to Rust. */
+async function fetchReference(
+  url: string,
+  kind: "json" | "html",
+): Promise<Response> {
+  const response = await invoke<{ status: number; body: string }>(
+    "reference_fetch",
+    { request: { url, kind } },
+  );
+  // Match the previous transport's null-body statuses; even an empty string
+  // otherwise makes Response throw before the existing error mapper runs.
+  const body = [204, 205, 304].includes(response.status) ? null : response.body;
+  return new Response(body, { status: response.status });
+}
 
-/** Goes through the Tauri http plugin (Rust reqwest) — no webview CORS. */
+/** Narrow native GET command; no generic HTTP permission is available. */
 async function getJson(url: string): Promise<
   { ok: true; body: unknown } | { ok: false; error: AutofillError }
 > {
   let res: Response;
   try {
-    res = await fetch(url, {
-      headers: { "User-Agent": USER_AGENT, Accept: "application/json" },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    res = await fetchReference(url, "json");
   } catch {
     return { ok: false, error: "offline" };
   }
@@ -93,8 +100,8 @@ export async function lookupIsbn(isbn: string): Promise<AutofillResult> {
 
 /**
  * Reads at most `maxBytes` of a response body, then cancels the rest — the
- * Tauri http plugin's stream is pull-based, so cancelling stops the Rust-side
- * read too. Decodes as UTF-8 like `Response.text()` does, chunk-safely.
+ * native response has already been bounded before IPC. This decoder preserves
+ * the existing metadata reader's UTF-8 behavior, chunk-safely.
  * Exported for tests.
  */
 export async function readCapped(
@@ -128,13 +135,7 @@ export async function readCapped(
 export async function lookupUrl(url: string): Promise<AutofillResult> {
   let res: Response;
   try {
-    res = await fetch(url, {
-      headers: {
-        "User-Agent": USER_AGENT,
-        Accept: "text/html,application/xhtml+xml",
-      },
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    res = await fetchReference(url, "html");
   } catch {
     return { ok: false, error: "url-unreadable" };
   }

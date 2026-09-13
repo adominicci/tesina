@@ -57,6 +57,37 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
   };
 }
 
+export function readLocalAiWebviewCapture(stdout: string, stderr: string) {
+  try {
+    return readLocalAiProofResult(stdout, stderr);
+  } catch (error) {
+    let stdoutSchemaValid = false;
+    try {
+      readLocalAiProofResult(stdout, "");
+      stdoutSchemaValid = true;
+    } catch {
+      /* Diagnose independently; never accept or publish the payload. */
+    }
+    // Exact fixed host fallback only; variable Wry/OS messages remain unknown.
+    const nativeNoReport =
+      "local-ai-webview-proof: no successful native report";
+    const stderrKind = stderr === ""
+      ? "empty"
+      : stderr === `${nativeNoReport}\n` || stderr === `${nativeNoReport}\r\n`
+      ? "native-no-report"
+      : "unknown";
+    console.error(JSON.stringify({
+      proof: "local-ai-webview-capture-failure-v1",
+      // UTF-16 code-unit lengths; 65537 is the over-capture-limit sentinel.
+      stdoutCodeUnits: Math.min(stdout.length, 65537),
+      stderrCodeUnits: Math.min(stderr.length, 65537),
+      stdoutSchemaValid,
+      stderrKind,
+    }));
+    throw error;
+  }
+}
+
 export function readLocalAiNativeOutput(stdout: string, stderr: string) {
   const lines = stdout.trim().split("\n");
   const marker =
@@ -372,7 +403,7 @@ async function main() {
       processResult.stderr,
     );
     const webview = await command(host, [fake, script], native, 70_000);
-    const result = readLocalAiProofResult(webview.stdout, webview.stderr);
+    const result = readLocalAiWebviewCapture(webview.stdout, webview.stderr);
     const quit = await command(
       host,
       [fake, script, "--native-quit"],

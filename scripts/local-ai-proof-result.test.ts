@@ -21,6 +21,7 @@ const passing = {
   completionOrdering: true,
   freshGeneration: true,
   pendingCancelWins: true,
+  updaterLifecycle: true,
   passed: true,
 };
 describe("local inference native proof result", () => {
@@ -123,6 +124,8 @@ describe("local inference native proof result", () => {
         { freshGeneration: undefined },
         { pendingCancelWins: false },
         { pendingCancelWins: undefined },
+        { updaterLifecycle: false },
+        { updaterLifecycle: undefined },
       ]
     ) {
       expect(() =>

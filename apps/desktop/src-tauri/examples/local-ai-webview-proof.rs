@@ -33,6 +33,16 @@ async fn local_inference_proof_coordinate(
         "terminal-ready",
         "release-cancelled-terminal",
         "terminal-cleaned",
+        "arm",
+        "admitted",
+        "cleaned",
+        "arm",
+        "admitted",
+        "cleaned",
+        "arm",
+        "admitted",
+        "release",
+        "finished",
     ];
     if expected.get(usize::from(stage)).copied() != Some(action.as_str()) {
         return Err("proof-order");
@@ -163,6 +173,7 @@ fn local_inference_proof_report(
     completion_ordering: bool,
     fresh_generation: bool,
     pending_cancel_wins: bool,
+    updater_lifecycle: bool,
     coordination: tauri::State<'_, Coordination>,
     passed: bool,
 ) {
@@ -182,8 +193,9 @@ fn local_inference_proof_report(
         && completion_ordering
         && fresh_generation
         && pending_cancel_wins
-        && *coordination.stage.lock().unwrap() == 11;
-    println!("{{\"proof\":\"local-ai-webview-v1\",\"cases\":{cases},\"genericHttpDenied\":{denied},\"privateFsDenied\":{private_fs},\"privateFsWriteDenials\":{private_fs_write_denials},\"cspDenied\":{csp},\"trapConnections\":{connections},\"cancellations\":{cancellations},\"nativeEscapeDenied\":{native_escape},\"cancellationTableEntries\":{cancellation_table_entries},\"cancellationTableSaturated\":{cancellation_table_saturated},\"readCancellation\":{read_cancellation},\"completionOrdering\":{completion_ordering},\"freshGeneration\":{fresh_generation},\"pendingCancelWins\":{pending_cancel_wins},\"passed\":{success}}}");
+        && updater_lifecycle
+        && *coordination.stage.lock().unwrap() == 21;
+    println!("{{\"proof\":\"local-ai-webview-v1\",\"cases\":{cases},\"genericHttpDenied\":{denied},\"privateFsDenied\":{private_fs},\"privateFsWriteDenials\":{private_fs_write_denials},\"cspDenied\":{csp},\"trapConnections\":{connections},\"cancellations\":{cancellations},\"nativeEscapeDenied\":{native_escape},\"cancellationTableEntries\":{cancellation_table_entries},\"cancellationTableSaturated\":{cancellation_table_saturated},\"readCancellation\":{read_cancellation},\"completionOrdering\":{completion_ordering},\"freshGeneration\":{fresh_generation},\"pendingCancelWins\":{pending_cancel_wins},\"updaterLifecycle\":{updater_lifecycle},\"passed\":{success}}}");
     result.store(success, Ordering::SeqCst);
     // Some platform event loops do not propagate AppHandle::exit's code.
     if !success {
@@ -231,7 +243,8 @@ fn main() {
     context.config_mut().app.windows[0].background_throttling =
         Some(tauri::utils::config::BackgroundThrottlingPolicy::Disabled);
     context.config_mut().app.windows[0].title = "Tesina local inference proof".into();
-    let html = format!("<!doctype html><html><head><meta charset=\"utf-8\"></head><body data-trap=\"{trap_url}\">Local inference boundary proof<script type=\"module\" src=\"/proof.js\"></script></body></html>").into_bytes();
+    let host = std::env::consts::OS;
+    let html = format!("<!doctype html><html><head><meta charset=\"utf-8\"></head><body data-host=\"{host}\" data-trap=\"{trap_url}\">Local inference boundary proof<script type=\"module\" src=\"/proof.js\"></script></body></html>").into_bytes();
     context.set_assets(Box::new(ProofAssets { script, html }));
     let result = Arc::new(AtomicBool::new(false));
     tauri::Builder::default()

@@ -22,7 +22,7 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
   }
   const result = value as Record<string, unknown>;
   if (
-    Object.keys(result).length !== 16 ||
+    Object.keys(result).length !== 17 ||
     result.proof !== "local-ai-webview-v1" || result.cases !== 12 ||
     result.genericHttpDenied !== true || result.privateFsDenied !== true ||
     result.privateFsWriteDenials !== 2 ||
@@ -33,6 +33,7 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
     result.readCancellation !== true || result.completionOrdering !== true ||
     result.freshGeneration !== true ||
     result.pendingCancelWins !== true ||
+    result.updaterLifecycle !== true ||
     result.passed !== true
   ) return fail();
   return {
@@ -51,6 +52,7 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
     completionOrdering: true,
     freshGeneration: true,
     pendingCancelWins: true,
+    updaterLifecycle: true,
     passed: true,
   };
 }
@@ -267,12 +269,8 @@ async function main() {
       [
         "run",
         "-A",
-        "npm:esbuild@0.25.12",
-        "apps/desktop/src/lib/local-ai/proof.ts",
-        "--bundle",
-        "--format=esm",
-        "--platform=browser",
-        `--outfile=${script}`,
+        "apps/desktop/src/lib/local-ai/buildProof.ts",
+        temp,
       ],
       root,
       120_000,

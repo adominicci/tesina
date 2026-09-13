@@ -472,22 +472,8 @@ async fn launch_environment(executable: &std::path::Path) {
     }
 }
 
-async fn launch_integrity(executable: &std::path::Path) {
-    FAILURE_PHASE.store(3, Ordering::SeqCst);
-    let fixture = tempfile::tempdir().unwrap();
-    let copied = fixture.path().join("owned-fake");
-    std::fs::copy(executable, &copied).unwrap();
-    let model = fixture.path().join("launch-integrity.gguf");
-    std::fs::write(&model, b"synthetic fixture, not model weights").unwrap();
-    let service = tesina_lib::local_ai::proof_service(copied, model).unwrap();
-    let id = uuid::Uuid::new_v4().to_string();
-    let request = json!({"requestId":id,"documentRevision":7,"task":"writingCoach","input":{"documentLanguage":"en","passage":{"sourceId":"p","snapshotId":"s","text":"Fixture"}}});
-    FAILURE_PHASE.store(4, Ordering::SeqCst);
-    let result = tokio::time::timeout(std::time::Duration::from_secs(5), service.run(request))
-        .await
-        .unwrap()
-        .unwrap();
-    let category = match (result["status"].as_str(), result["error"].as_str()) {
+fn result_category(result: &serde_json::Value) -> u8 {
+    match (result["status"].as_str(), result["error"].as_str()) {
         (Some("ok"), _) => 1,
         (Some("error"), Some(code)) => [
             "unsupported-platform",
@@ -508,8 +494,25 @@ async fn launch_integrity(executable: &std::path::Path) {
         .position(|known| *known == code)
         .map_or(15, |i| i as u8 + 2),
         _ => 15,
-    };
-    FAILURE_RESULT.store(category, Ordering::SeqCst);
+    }
+}
+
+async fn launch_integrity(executable: &std::path::Path) {
+    FAILURE_PHASE.store(3, Ordering::SeqCst);
+    let fixture = tempfile::tempdir().unwrap();
+    let copied = fixture.path().join("owned-fake");
+    std::fs::copy(executable, &copied).unwrap();
+    let model = fixture.path().join("launch-integrity.gguf");
+    std::fs::write(&model, b"synthetic fixture, not model weights").unwrap();
+    let service = tesina_lib::local_ai::proof_service(copied, model).unwrap();
+    let id = uuid::Uuid::new_v4().to_string();
+    let request = json!({"requestId":id,"documentRevision":7,"task":"writingCoach","input":{"documentLanguage":"en","passage":{"sourceId":"p","snapshotId":"s","text":"Fixture"}}});
+    FAILURE_PHASE.store(4, Ordering::SeqCst);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), service.run(request))
+        .await
+        .unwrap()
+        .unwrap();
+    FAILURE_RESULT.store(result_category(&result), Ordering::SeqCst);
     // Retained proof PID witnesses a successful start, not current liveness.
     CHILD_STARTED.store(service.proof_child_pid().is_some(), Ordering::SeqCst);
     FIXTURE_MARKER.store(
@@ -650,6 +653,7 @@ async fn crash_and_explicit_retry(executable: PathBuf) {
         .unwrap()
         .unwrap()
         .unwrap();
+    FAILURE_RESULT.store(result_category(&result), Ordering::SeqCst);
     service.prepare_shutdown().await.unwrap();
     assert!(started.elapsed() < Duration::from_secs(5));
     #[cfg(target_os = "macos")]
@@ -661,6 +665,7 @@ async fn crash_and_explicit_retry(executable: PathBuf) {
         result,
         json!({"requestId":id,"documentRevision":7,"task":"writingCoach","status":"error","error":"crash"})
     );
+    FAILURE_RESULT.store(0, Ordering::SeqCst);
     assert!(service.shutdown_ready());
     service.resume().unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;

@@ -9,6 +9,7 @@ import {
 } from "@tauri-apps/plugin-fs";
 import { createLocalInferenceProvider } from "./client.ts";
 import type { LocalInferenceRequest } from "./types.ts";
+import { proveUpdaterLifecycle } from "./updaterProof.ts";
 
 const provider = createLocalInferenceProvider();
 async function prove() {
@@ -214,7 +215,7 @@ async function prove() {
   }
   if (!denied) throw new Error("generic-http");
   const coordinate = (action: string) =>
-    invoke("local_inference_proof_coordinate", { action });
+    invoke<void>("local_inference_proof_coordinate", { action });
   await coordinate("arm");
   const readRequest = {
     ...cancellationRequest,
@@ -323,6 +324,12 @@ async function prove() {
     raceTerminalCount() !== 1
   ) throw new Error("race-completed-noop");
   // Count only acknowledged native records, never provider-local tombstones.
+  await proveUpdaterLifecycle(
+    provider,
+    cancellationRequest,
+    coordinate,
+    acceptedIds,
+  );
   for (let attempt = 0; acceptedIds.size < 32 && attempt < 33; attempt++) {
     const requestId = crypto.randomUUID();
     await invoke("local_inference_cancel", { requestId });
@@ -366,6 +373,7 @@ async function prove() {
     completionOrdering: true,
     freshGeneration: true,
     pendingCancelWins: true,
+    updaterLifecycle: true,
     passed: true,
   });
 }
@@ -385,6 +393,7 @@ prove().catch(async () => {
     completionOrdering: false,
     freshGeneration: false,
     pendingCancelWins: false,
+    updaterLifecycle: false,
     passed: false,
   });
 });

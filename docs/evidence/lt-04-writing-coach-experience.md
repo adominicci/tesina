@@ -52,6 +52,20 @@ exact accepted source and then confirmed the full checklist passed.
 
 ## Evidence boundary
 
+### Navigation-group retest reported on 2026-09-13
+
+The product owner replied `pass` to the requested VoiceOver check for the build
+launched from `dbc35f2d9bf8496da96c34898abbbb15dd937013`: Previous/Next was
+announced as one labeled "Issue X of Y" group, and Next announced the new
+position once while keyboard focus remained on Next. This is a user-reported
+result for that requested build, not an independently inspected runtime SHA.
+
+The later controller and boundary-audit correction at
+`4de4e264007f39717b45deb3908779e572c21a92` did not change the navigation-group
+markup or live-region markup. The defensive stale-navigation announcement has
+automated coverage but still lacks a separate real-VoiceOver retest. It is not
+included in this new attestation.
+
 This record satisfies the LT-04 manual assistive-technology and narrow-layout
 gate for the exact local source above. It does not claim a packaged build,
 Windows behavior, signing, notarization, publication, release delivery, model

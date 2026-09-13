@@ -21,6 +21,7 @@ pub(crate) struct ReadyGeometry {
 pub(crate) enum DriverAction {
     Drag(ReadyGeometry),
     Copy,
+    CollapseSelection,
     Paste,
     MoveCaret,
     DeadKey,
@@ -34,6 +35,7 @@ enum DriverStage {
     AwaitingReady,
     AwaitingDrag,
     AwaitingCopy,
+    AwaitingCollapse,
     AwaitingPaste,
     AwaitingCaret,
     AwaitingDeadKeyAcknowledgement,
@@ -126,6 +128,7 @@ impl DriverProtocol {
                 }
                 let selected_text = nonempty_text(value, "selectedText")?.to_owned();
                 self.selected_text = Some(selected_text);
+                self.selection_position = Some(selection_to);
                 self.stage = DriverStage::AwaitingCopy;
                 Ok(DriverAction::Copy)
             }
@@ -135,6 +138,20 @@ impl DriverProtocol {
                     return Err("copied text does not match the drag selection".into());
                 }
                 self.document_size = Some(document_position(value, "documentSize")?);
+                self.stage = DriverStage::AwaitingCollapse;
+                Ok(DriverAction::CollapseSelection)
+            }
+            (DriverStage::AwaitingCollapse, "collapsed") => {
+                let document_size = document_position(value, "documentSize")?;
+                let selection_position = document_position(value, "selectionPos")?;
+                if self.document_size != Some(document_size)
+                    || self.selection_position != Some(selection_position)
+                {
+                    return Err(
+                        "copied selection did not collapse at its end in the unchanged document"
+                            .into(),
+                    );
+                }
                 self.stage = DriverStage::AwaitingPaste;
                 Ok(DriverAction::Paste)
             }
@@ -626,6 +643,13 @@ mod platform {
                     self.require_focus()?;
                     self.send_control_chord(VK_C, "copy")?;
                 }
+                DriverAction::CollapseSelection => {
+                    self.require_focus()?;
+                    self.send_key_sequence(
+                        &[(VK_RIGHT, false), (VK_RIGHT, true)],
+                        "collapse selection",
+                    )?;
+                }
                 DriverAction::Paste => {
                     self.require_focus()?;
                     let expected = self
@@ -814,8 +838,6 @@ mod platform {
         fn send_paste(&mut self) -> Result<(), String> {
             self.send_key_sequence(
                 &[
-                    (VK_RIGHT, false),
-                    (VK_RIGHT, true),
                     (VK_CONTROL, false),
                     (VK_V, false),
                     (VK_V, true),
@@ -1255,6 +1277,43 @@ mod tests {
     }
 
     #[test]
+    fn copy_waits_for_collapsed_selection_before_paste() {
+        let mut protocol = DriverProtocol::new();
+        protocol.advance(&ready()).unwrap();
+        protocol
+            .advance(&json!({ "version": 1, "stage": "drag",
+            "selectionFrom": 42, "selectionTo": 75, "gapPosition": 60,
+            "selectedText": "invented selection" }))
+            .unwrap();
+        let action = protocol
+            .advance(&json!({ "version": 1, "stage": "copy",
+            "selectedText": "invented selection", "documentSize": 500 }))
+            .unwrap();
+        assert_eq!(format!("{action:?}"), "CollapseSelection");
+        assert!(protocol
+            .advance(&json!({ "version": 1, "stage": "paste",
+            "pastedText": "invented selection", "beforeSize": 500,
+            "afterSize": 518, "selectionPos": 93 }))
+            .is_err());
+        for invalid in [
+            json!({ "documentSize": 501, "selectionPos": 75 }),
+            json!({ "documentSize": 500, "selectionPos": 42 }),
+        ] {
+            let mut value = invalid;
+            value["version"] = json!(1);
+            value["stage"] = json!("collapsed");
+            assert!(protocol.advance(&value).is_err());
+        }
+        assert_eq!(
+            protocol
+                .advance(&json!({ "version": 1, "stage": "collapsed",
+            "documentSize": 500, "selectionPos": 75 }))
+                .unwrap(),
+            DriverAction::Paste
+        );
+    }
+
+    #[test]
     fn advances_only_through_the_complete_ordered_protocol() {
         let mut protocol = DriverProtocol::new();
         assert!(matches!(
@@ -1282,6 +1341,13 @@ mod tests {
                     "selectedText": "invented selection",
                     "documentSize": 500
                 }))
+                .unwrap(),
+            DriverAction::CollapseSelection
+        );
+        assert_eq!(
+            protocol
+                .advance(&json!({ "version": 1, "stage": "collapsed",
+                "documentSize": 500, "selectionPos": 75 }))
                 .unwrap(),
             DriverAction::Paste
         );
@@ -1370,6 +1436,10 @@ mod tests {
                 "selectedText": "invented selection",
                 "documentSize": 500
             }))
+            .unwrap();
+        protocol
+            .advance(&json!({ "version": 1, "stage": "collapsed",
+            "documentSize": 500, "selectionPos": 75 }))
             .unwrap();
         protocol
             .advance(&json!({

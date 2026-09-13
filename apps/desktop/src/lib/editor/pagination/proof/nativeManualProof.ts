@@ -54,6 +54,9 @@ let deadKeyBaseline:
   | undefined;
 let deadKeyAcknowledgementPosted = false;
 let deadKeyOutcomePosted = false;
+let copiedDocumentJson: string | null = null;
+let copyRightKeys = 0;
+let collapseAcknowledged = false;
 
 function requireElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector);
@@ -103,9 +106,13 @@ function nextFrame(): Promise<void> {
 
 function postNativeInput(value: unknown): void {
   if (evidenceMode !== "windows-driven" || finished) return;
-  const message = parseNativeManualInputMessage(value);
-  if (!nativeBridge.postNativeInput(message)) {
-    finish(false, "Windows native input channel is unavailable");
+  try {
+    const message = parseNativeManualInputMessage(value);
+    if (!nativeBridge.postNativeInput(message)) {
+      finish(false, "Windows native input channel is unavailable");
+    }
+  } catch (error) {
+    finish(false, `Native input acknowledgement failed: ${String(error)}`);
   }
 }
 
@@ -238,6 +245,8 @@ document.addEventListener("copy", (event) => {
   });
   updateStatus();
   if (evidence !== prior && evidence.copyDocumentSize !== null) {
+    copiedDocumentJson = JSON.stringify(editor?.getJSON());
+    copyRightKeys = evidence.rightKeys;
     requestAnimationFrame(() =>
       postNativeInput({
         version: NATIVE_INPUT_PROTOCOL_VERSION,
@@ -296,6 +305,35 @@ document.addEventListener("mousedown", (event) => {
   });
 }, true);
 document.addEventListener("mouseup", inspectMouseSelection, true);
+
+function inspectDrivenCollapse(): void {
+  if (
+    evidenceMode !== "windows-driven" || !editor || finished ||
+    collapseAcknowledged || evidence.copies === 0 || evidence.pastes !== 0 ||
+    evidence.rightKeys <= copyRightKeys
+  ) return;
+  const selection = editor.state.selection;
+  const documentSize = editor.state.doc.content.size;
+  if (
+    !editor.isFocused || !selection.empty ||
+    selection.from !== evidence.selectionTo ||
+    documentSize !== evidence.copyDocumentSize ||
+    JSON.stringify(editor.getJSON()) !== copiedDocumentJson
+  ) {
+    finish(
+      false,
+      "Native ArrowRight did not collapse the copied selection in the unchanged document",
+    );
+    return;
+  }
+  collapseAcknowledged = true;
+  postNativeInput({
+    version: NATIVE_INPUT_PROTOCOL_VERSION,
+    stage: "collapsed",
+    documentSize,
+    selectionPos: selection.from,
+  });
+}
 
 function inspectDrivenCaret(): void {
   if (
@@ -515,6 +553,7 @@ async function prepare(): Promise<void> {
   editor.registerPlugin(createDisposablePaginationProofPlugin());
   editor.on("transaction", inspectDrivenTransaction);
   editor.on("selectionUpdate", inspectDrivenCaret);
+  editor.on("selectionUpdate", inspectDrivenCollapse);
   const paragraphPos = positionOfParagraph(
     editor.state.doc,
     "Invented paragraph 1",

@@ -19,6 +19,12 @@ export interface NativeInputGapBounds {
 export type NativeManualInputMessage =
   | {
     version: 1;
+    stage: "collapsed";
+    documentSize: number;
+    selectionPos: number;
+  }
+  | {
+    version: 1;
     stage: "ready";
     viewport: NativeInputViewport;
     devicePixelRatio: number;
@@ -216,6 +222,20 @@ export function parseNativeManualInputMessage(
         selectedText: nonemptyText(message["selectedText"], "selectedText"),
         documentSize: documentPosition(message["documentSize"], "documentSize"),
       };
+    case "collapsed": {
+      const documentSize = documentPosition(
+        message["documentSize"],
+        "documentSize",
+      );
+      const selectionPos = documentPosition(
+        message["selectionPos"],
+        "selectionPos",
+      );
+      if (selectionPos > documentSize) {
+        throw new Error("collapsed selection must be inside the document");
+      }
+      return { version: 1, stage: "collapsed", documentSize, selectionPos };
+    }
     case "paste": {
       const pastedText = nonemptyText(message["pastedText"], "pastedText");
       const beforeSize = documentPosition(message["beforeSize"], "beforeSize");

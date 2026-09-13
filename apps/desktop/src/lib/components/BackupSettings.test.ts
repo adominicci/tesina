@@ -95,7 +95,7 @@ class Harness {
   constructor(backup?: BackupUiSettings) {
     this.settings = {
       backup,
-      updateBackup: vi.fn(),
+      updateBackup: vi.fn<BackupSettingsFacade["updateBackup"]>(),
       flushPending: () => Promise.resolve(),
     };
     this.adapter = {

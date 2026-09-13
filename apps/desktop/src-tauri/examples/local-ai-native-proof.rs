@@ -951,6 +951,116 @@ mod windows_death {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    pub fn quota(executable: &std::path::Path) {
+        let fixture = tempfile::tempdir().unwrap();
+        let holder_root = fixture.path().join("holder");
+        let sentinel_root = fixture.path().join("sentinel");
+        std::fs::create_dir(&holder_root).unwrap();
+        std::fs::create_dir(&sentinel_root).unwrap();
+        let proof = std::env::current_exe().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let spawn = |root: &std::path::Path| Parent {
+            child: Command::new(&proof)
+                .args([std::ffi::OsStr::new("--sentinel"), root.as_os_str()])
+                .current_dir(&cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+            release: Some(root.join("sentinel-release")),
+        };
+        let mut holder = spawn(&holder_root);
+        let mut sentinel = spawn(&sentinel_root);
+        let ready = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < ready
+            && (!fixed_file(&holder_root.join("sentinel-ready"), b"ready")
+                || !fixed_file(&sentinel_root.join("sentinel-ready"), b"ready"))
+        {
+            assert!(
+                holder.live() && sentinel.live(),
+                "quota fixture setup failed"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            fixed_file(&holder_root.join("sentinel-ready"), b"ready")
+                && fixed_file(&sentinel_root.join("sentinel-ready"), b"ready"),
+            "quota fixture setup timeout"
+        );
+        let model = fixture.path().join("creation-quota.gguf");
+        std::fs::write(&model, b"synthetic fixture, not model weights").unwrap();
+        let started_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let mut snapshot = tesina_lib::local_ai::ProofQuota::default();
+        assert!(holder.live() && sentinel.live());
+        let started = Instant::now();
+        let result = tesina_lib::local_ai::proof_quota_child(
+            executable.to_owned(),
+            model,
+            &holder.child,
+            &mut snapshot,
+        );
+        let (stage, code) = tesina_lib::local_ai::proof_startup_snapshot();
+        let startup_failed = result
+            .as_ref()
+            .err()
+            .and_then(|error| serde_json::to_value(error).ok())
+            == Some(json!("startup-failed"));
+        if let Ok(mut unexpected) = result {
+            unexpected.stop().unwrap();
+            panic!("quota create unexpectedly succeeded");
+        }
+        let remaining = Duration::from_secs(5)
+            .saturating_sub(started.elapsed())
+            .as_millis() as u32;
+        let signalled = unsafe { WaitForSingleObject(holder.handle(), remaining) == WAIT_OBJECT_0 };
+        let elapsed_ms = started.elapsed().as_millis();
+        let alive = sentinel.live();
+        std::fs::write(sentinel_root.join("sentinel-ping"), b"ping").unwrap();
+        let pong_deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < pong_deadline
+            && !fixed_file(&sentinel_root.join("sentinel-pong"), b"alive")
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let responsive =
+            fixed_file(&sentinel_root.join("sentinel-pong"), b"alive") && sentinel.live();
+        std::fs::write(sentinel_root.join("sentinel-release"), b"release").unwrap();
+        let released = unsafe { WaitForSingleObject(sentinel.handle(), 1000) == WAIT_OBJECT_0 }
+            && sentinel
+                .child
+                .try_wait()
+                .unwrap()
+                .is_some_and(|status| status.success());
+        let absent = !fixture.path().join("quota-entry").exists();
+        let passed = !snapshot.created
+            && snapshot.limit == 1
+            && snapshot.before_count == 1
+            && snapshot.after_count == 1
+            && snapshot.holder_member
+            && startup_failed
+            && stage == 10
+            && code < 0
+            && absent
+            && signalled
+            && elapsed_ms < 5000
+            && alive
+            && responsive
+            && released;
+        println!(
+            "{}",
+            json!({"proof":"windows-creation-quota-v1", "holderPid":holder.child.id(), "sentinelPid":sentinel.child.id(), "startedUnixMs":started_unix_ms,
+            "limit":snapshot.limit,"beforeCount":snapshot.before_count,"afterCount":snapshot.after_count,"holderMember":snapshot.holder_member,
+            "created":snapshot.created,"startupFailed":startup_failed,"stage":stage,"nativeCode":code,"markerAbsent":absent,"holderSignalled":signalled,"elapsedMs":elapsed_ms,
+            "sentinelAlive":alive,"sentinelResponsive":responsive,"sentinelReleased":released,"passed":passed})
+        );
+        let _ = holder.child.try_wait();
+        let _ = sentinel.child.try_wait();
+        assert!(passed, "quota creation proof failed");
+    }
     pub fn run(executable: &std::path::Path) {
         for scenario in ["loading", "read-generation"] {
             let fixture = tempfile::tempdir().unwrap();
@@ -1449,7 +1559,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         parent_death_phases(&executable).await;
         #[cfg(windows)]
-        windows_death::run(&executable);
+        { windows_death::run(&executable); windows_death::quota(&executable); }
         println!("local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending");
     });
 }

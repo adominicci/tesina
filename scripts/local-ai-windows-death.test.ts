@@ -1,5 +1,26 @@
 import { expect, it } from "vitest";
 import { readLocalAiNativeOutput } from "./run-local-ai-proof.ts";
+const creation = {
+  proof: "windows-creation-quota-v1",
+  created: false,
+  holderPid: 201,
+  sentinelPid: 202,
+  startedUnixMs: 1700000000000,
+  limit: 1,
+  beforeCount: 1,
+  afterCount: 1,
+  holderMember: true,
+  startupFailed: true,
+  stage: 10,
+  nativeCode: -2147024891,
+  markerAbsent: true,
+  holderSignalled: true,
+  elapsedMs: 20,
+  sentinelAlive: true,
+  sentinelResponsive: true,
+  sentinelReleased: true,
+  passed: true,
+};
 
 const marker =
   "local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending";
@@ -33,10 +54,11 @@ const output = (changed: Record<string, unknown> = {}) =>
   [
     JSON.stringify({ ...record, ...changed }),
     JSON.stringify({ ...record, phase: "read-generation" }),
+    JSON.stringify(creation),
     marker,
   ].join("\n");
 it("accepts only two ordered Windows handle proofs with live responsive sentinel", () => {
-  expect(readLocalAiNativeOutput(output(), "", "windows")).toHaveLength(3);
+  expect(readLocalAiNativeOutput(output(), "", "windows")).toHaveLength(4);
   for (
     const changed of [
       { parentSignalled: false },

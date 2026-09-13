@@ -341,6 +341,22 @@ fn respond(mut stream: TcpStream, key: &str, scenario: &str, fixture: &std::path
     }
 }
 fn main() {
+    #[cfg(windows)]
+    {
+        let args: Vec<_> = std::env::args_os().collect();
+        if let Some(model) = args
+            .windows(2)
+            .find(|pair| pair[0] == "--model")
+            .map(|pair| std::path::Path::new(&pair[1]))
+        {
+            if model
+                .file_stem()
+                .is_some_and(|name| name == "creation-quota")
+            {
+                std::fs::write(model.parent().unwrap().join("quota-entry"), b"entered").unwrap();
+            }
+        }
+    }
     let key = std::env::var("LLAMA_API_KEY").expect("fixture key required");
     assert!(key.len() >= 64);
     let args: Vec<String> = std::env::args().collect();

@@ -12,7 +12,7 @@ mod platform;
 #[cfg(any(target_os = "macos", windows))]
 pub use platform::{guardian_entry, OwnedChild};
 #[cfg(all(windows, feature = "local-ai-proof"))]
-pub use platform::{proof_startup_snapshot, proof_transition_snapshot};
+pub use platform::{proof_startup_snapshot, proof_transition_snapshot, ProofQuota};
 
 pub const FLAGS: &[&str] = &[
     "--host",

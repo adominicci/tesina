@@ -65,11 +65,69 @@ pub struct OwnedChild {
     process: Handle,
     pub pid: u32,
 }
+#[cfg(feature = "local-ai-proof")]
+#[derive(Default)]
+pub struct ProofQuota {
+    pub created: bool,
+    pub limit: u32,
+    pub before_count: u32,
+    pub after_count: u32,
+    pub holder_member: bool,
+}
+#[cfg(feature = "local-ai-proof")]
+fn quota_membership(job: HANDLE, holder: HANDLE) -> Result<(u32, bool), ErrorCode> {
+    unsafe {
+        let mut counts = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
+        QueryInformationJobObject(
+            Some(job),
+            JobObjectBasicAccountingInformation,
+            (&mut counts as *mut JOBOBJECT_BASIC_ACCOUNTING_INFORMATION).cast(),
+            std::mem::size_of_val(&counts) as u32,
+            None,
+        )
+        .map_err(|_| ErrorCode::StartupFailed)?;
+        let mut member = windows::core::BOOL::default();
+        IsProcessInJob(holder, Some(job), &mut member).map_err(|_| ErrorCode::StartupFailed)?;
+        Ok((
+            counts.ActiveProcesses,
+            member.as_bool() && WaitForSingleObject(holder, 0) == WAIT_TIMEOUT,
+        ))
+    }
+}
 impl OwnedChild {
     pub fn start(
         launch: &Launch,
         key: &str,
         cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
+    ) -> Result<Self, ErrorCode> {
+        Self::start_inner(
+            launch,
+            key,
+            cancellation,
+            #[cfg(feature = "local-ai-proof")]
+            None,
+        )
+    }
+    #[cfg(feature = "local-ai-proof")]
+    pub fn proof_quota_start(
+        launch: &Launch,
+        key: &str,
+        holder: &std::process::Child,
+        snapshot: &mut ProofQuota,
+    ) -> Result<Self, ErrorCode> {
+        use std::os::windows::io::AsRawHandle;
+        Self::start_inner(
+            launch,
+            key,
+            None,
+            Some((HANDLE(holder.as_raw_handle()), snapshot)),
+        )
+    }
+    fn start_inner(
+        launch: &Launch,
+        key: &str,
+        cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
+        #[cfg(feature = "local-ai-proof")] mut quota: Option<(HANDLE, &mut ProofQuota)>,
     ) -> Result<Self, ErrorCode> {
         #[cfg(feature = "local-ai-proof")]
         if let Ok(mut value) = TRANSITION.lock() {
@@ -93,6 +151,39 @@ impl OwnedChild {
                 std::mem::size_of_val(&limits) as u32,
             )
             .map_err(startup_error!(3))?;
+            #[cfg(feature = "local-ai-proof")]
+            if let Some((holder, snapshot)) = quota.as_mut() {
+                limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
+                limits.BasicLimitInformation.ActiveProcessLimit = 1;
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                )
+                .map_err(startup_error!(3))?;
+                AssignProcessToJobObject(job.0, *holder).map_err(startup_error!(3))?;
+                let mut observed = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+                QueryInformationJobObject(
+                    Some(job.0),
+                    JobObjectExtendedLimitInformation,
+                    (&mut observed as *mut JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&observed) as u32,
+                    None,
+                )
+                .map_err(startup_error!(3))?;
+                snapshot.limit = observed.BasicLimitInformation.ActiveProcessLimit;
+                (snapshot.before_count, snapshot.holder_member) = quota_membership(job.0, *holder)?;
+                if snapshot.limit != 1
+                    || snapshot.before_count != 1
+                    || !snapshot.holder_member
+                    || !observed.BasicLimitInformation.LimitFlags.contains(
+                        JOB_OBJECT_LIMIT_ACTIVE_PROCESS | JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+                    )
+                {
+                    return Err(ErrorCode::StartupFailed);
+                }
+            }
             let attributes = SECURITY_ATTRIBUTES {
                 nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
                 lpSecurityDescriptor: std::ptr::null_mut(),
@@ -201,7 +292,7 @@ impl OwnedChild {
                     .collect();
             let mut process = PROCESS_INFORMATION::default();
             startup_stage!(10);
-            CreateProcessW(
+            let created = CreateProcessW(
                 PCWSTR(executable.as_ptr()),
                 Some(PWSTR(command.as_mut_ptr())),
                 None,
@@ -212,13 +303,32 @@ impl OwnedChild {
                 PCWSTR(cwd.as_ptr()),
                 &info.StartupInfo,
                 &mut process,
-            )
-            .map_err(startup_error!(10))?;
+            );
+            // A successful call grants handle ownership before any fallible proof observation.
+            let owned = created
+                .as_ref()
+                .ok()
+                .map(|_| (Handle(process.hProcess), Handle(process.hThread)));
+            #[cfg(feature = "local-ai-proof")]
+            if let Some((holder, snapshot)) = quota.as_mut() {
+                snapshot.created = created.is_ok();
+                if let Some((process, _)) = &owned {
+                    // A broken JOB_LIST must not let this proof's unexpected child escape.
+                    if WaitForSingleObject(process.0, 0) == WAIT_TIMEOUT {
+                        TerminateProcess(process.0, 1).map_err(|_| ErrorCode::StartupFailed)?;
+                    }
+                    if WaitForSingleObject(process.0, 5000) != WAIT_OBJECT_0 {
+                        return Err(ErrorCode::StartupFailed);
+                    }
+                }
+                (snapshot.after_count, snapshot.holder_member) = quota_membership(job.0, *holder)?;
+            }
+            created.map_err(startup_error!(10))?;
             startup_stage!(11);
-            let _thread = Handle(process.hThread);
+            let (process_handle, _thread) = owned.ok_or(ErrorCode::StartupFailed)?;
             Ok(Self {
                 job: Some(job),
-                process: Handle(process.hProcess),
+                process: process_handle,
                 pid: process.dwProcessId,
             })
         }

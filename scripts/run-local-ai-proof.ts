@@ -89,6 +89,36 @@ export function readLocalAiWebviewCapture(stdout: string, stderr: string) {
       : postMessage
       ? postMessageKind
       : "unknown";
+    // Finite source-shape probe only; never retain or publish variable text.
+    const wryPrefix =
+      "PostMessage failed ; is the messages queue full? Error code ";
+    const bounded = stderr.length <= 512;
+    const wryFixedPrefixAtStart = bounded && stderr.startsWith(wryPrefix);
+    const slot = wryFixedPrefixAtStart
+      ? stderr.slice(wryPrefix.length, wryPrefix.length + 10)
+      : "";
+    const wryCodeShape = slot === ""
+      ? "absent"
+      : /^0x[0-9A-F]{8}$/.test(slot)
+      ? "expected"
+      : "different";
+    let wrySuffixShape = "not-applicable";
+    if (wryFixedPrefixAtStart && wryCodeShape === "expected") {
+      const suffix = stderr.slice(wryPrefix.length + 10);
+      if (!suffix.startsWith(" - ") || !suffix.endsWith("\n")) {
+        wrySuffixShape = "extra-output-or-termination";
+      } else {
+        const message = suffix.slice(3).replace(/\r?\n$/, "");
+        wrySuffixShape = message === ""
+          ? "empty"
+          : /[\p{C}\u2028\u2029]/u.test(message)
+          ? "control-or-line-break"
+          : "single-line-nonempty";
+      }
+    }
+    const tauriInvokeKeyLiteralShape = bounded &&
+      /^__TAURI_INVOKE_KEY__ expected [^\p{C}\u2028\u2029]* but received [^\p{C}\u2028\u2029]*\r?\n(?![\s\S])/u
+        .test(stderr);
     console.error(JSON.stringify({
       proof: "local-ai-webview-capture-failure-v1",
       // UTF-16 code-unit lengths; 65537 is the over-capture-limit sentinel.
@@ -96,6 +126,12 @@ export function readLocalAiWebviewCapture(stdout: string, stderr: string) {
       stderrCodeUnits: Math.min(stderr.length, 65537),
       stdoutSchemaValid,
       stderrKind,
+      sourceRoute: {
+        wryFixedPrefixAtStart,
+        wryCodeShape,
+        wrySuffixShape,
+        tauriInvokeKeyLiteralShape,
+      },
     }));
     throw error;
   }
@@ -111,9 +147,11 @@ export function readLocalAiNativeOutput(
     "local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending";
   if (
     stderr || stdout.length > 64 * 1024 || lines.at(-1) !== marker ||
-    ![1, 3].includes(lines.length) ||
+    !(platform === "windows"
+      ? lines.length === 4
+      : [1, 3].includes(lines.length)) ||
     !["darwin", "windows"].includes(platform) ||
-    (platform === "windows" && lines.length !== 3)
+    (platform === "windows" && lines.length !== 4)
   ) throw new Error("local-ai-native-proof-failed");
   for (const [index, line] of lines.slice(0, -1).entries()) {
     let value;
@@ -123,6 +161,37 @@ export function readLocalAiNativeOutput(
       throw new Error("local-ai-native-proof-failed");
     }
     if (platform === "windows") {
+      if (index === 2) {
+        if (
+          !value || typeof value !== "object" || Array.isArray(value) ||
+          Object.keys(value).length !== 19 ||
+          value.proof !== "windows-creation-quota-v1" ||
+          value.created !== false ||
+          ![
+            "holderMember",
+            "startupFailed",
+            "markerAbsent",
+            "holderSignalled",
+            "sentinelAlive",
+            "sentinelResponsive",
+            "sentinelReleased",
+            "passed",
+          ].every((key) => value[key] === true) ||
+          value.limit !== 1 || value.beforeCount !== 1 ||
+          value.afterCount !== 1 || value.stage !== 10 ||
+          !Number.isInteger(value.nativeCode) || value.nativeCode >= 0 ||
+          value.nativeCode < -2147483648 ||
+          ![value.holderPid, value.sentinelPid].every((pid) =>
+            Number.isInteger(pid) && pid > 1 && pid <= 4294967295
+          ) ||
+          value.holderPid === value.sentinelPid ||
+          !Number.isSafeInteger(value.startedUnixMs) ||
+          value.startedUnixMs <= 0 ||
+          !Number.isInteger(value.elapsedMs) || value.elapsedMs < 0 ||
+          value.elapsedMs >= 5000
+        ) throw new Error("local-ai-native-proof-failed");
+        continue;
+      }
       if (
         !value || typeof value !== "object" || Array.isArray(value) ||
         Object.keys(value).length !== 18 ||
@@ -463,9 +532,8 @@ async function main() {
       // Publish only parsed, fully validated closed phase records before later UI proof.
       console.log(JSON.stringify({
         proof: "windows-parent-death-checkpoint-v1",
-        phases: nativeProcessOutput.slice(0, -1).map((line) =>
-          JSON.parse(line)
-        ),
+        creation: JSON.parse(nativeProcessOutput[2]),
+        phases: nativeProcessOutput.slice(0, 2).map((line) => JSON.parse(line)),
       }));
     }
     const webview = await command(host, [fake, script], native, 70_000);

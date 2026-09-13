@@ -69,6 +69,27 @@ pub fn proof_child(
     )
 }
 
+#[cfg(all(windows, feature = "local-ai-proof"))]
+pub fn proof_quota_child(
+    executable: std::path::PathBuf,
+    model: std::path::PathBuf,
+    holder: &std::process::Child,
+    snapshot: &mut process::ProofQuota,
+) -> Result<process::OwnedChild, contract::ErrorCode> {
+    process::OwnedChild::proof_quota_start(
+        &process::Launch {
+            executable: process::Artifact::fixture(executable)?,
+            model: process::Artifact::fixture(model)?,
+        },
+        &process::secret(),
+        holder,
+        snapshot,
+    )
+}
+
+#[cfg(all(windows, feature = "local-ai-proof"))]
+pub use process::ProofQuota;
+
 #[cfg(feature = "local-ai-proof")]
 pub fn proof_listener(child: &mut process::OwnedChild) -> Result<Option<u16>, contract::ErrorCode> {
     if !child.alive() {

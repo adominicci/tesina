@@ -277,6 +277,27 @@ async fn fetch_hops(
 mod tests {
     use super::*;
     #[test]
+    fn reference_contract_rejects_caller_transport_fields_at_deserialization() {
+        let valid = serde_json::json!({"url":"https://example.org/paper", "kind":"json"});
+        let request: FetchRequest = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(request.url, "https://example.org/paper");
+        assert!(matches!(request.kind, Kind::Json));
+        for (field, value) in [
+            ("headers", serde_json::json!({"Authorization":"synthetic"})),
+            ("method", serde_json::json!("GET")),
+            ("body", serde_json::json!("")),
+            ("proxy", serde_json::json!(null)),
+            ("timeout", serde_json::json!(1)),
+        ] {
+            let mut injected = valid.clone();
+            injected[field] = value;
+            assert!(
+                serde_json::from_value::<FetchRequest>(injected).is_err(),
+                "caller field {field} must not deserialize"
+            );
+        }
+    }
+    #[test]
     fn rejects_iana_special_use_even_when_globally_reachable() {
         for ip in [
             "192.31.196.1",
@@ -297,6 +318,90 @@ mod tests {
         sent: Mutex<Vec<(String, Vec<SocketAddr>)>>,
         local: Vec<IpAddr>,
         delay: Duration,
+    }
+    #[tokio::test]
+    async fn reference_contract_bounds_url_and_redirect_location_bytes() {
+        let prefix = "https://example.org/";
+        let ascii = format!("{prefix}{}", "a".repeat(4096 - prefix.len()));
+        assert_eq!(ascii.len(), 4096);
+        assert!(checked_url(&ascii).is_ok());
+        assert!(matches!(
+            checked_url(&(ascii.clone() + "a")),
+            Err(FetchError::InvalidRequest)
+        ));
+        let remaining = 4096 - prefix.len();
+        let unicode = format!(
+            "{prefix}{}{}",
+            "é".repeat(remaining / 2),
+            "a".repeat(remaining % 2)
+        );
+        assert_eq!(unicode.len(), 4096);
+        assert!(unicode.chars().count() < 4096);
+        assert!(checked_url(&unicode).is_ok());
+        let unicode_over = unicode + "a";
+        assert_eq!(unicode_over.len(), 4097);
+        assert!(unicode_over.chars().count() < 4096);
+        assert!(matches!(
+            checked_url(&unicode_over),
+            Err(FetchError::InvalidRequest)
+        ));
+
+        for bytes in [4096, 4097] {
+            let location = format!("{prefix}{}", "b".repeat(bytes - prefix.len()));
+            assert_eq!(location.len(), bytes);
+            let network = ControlledNetwork {
+                answers: Mutex::new(VecDeque::from([
+                    vec!["1.1.1.1:443".parse().unwrap()],
+                    vec!["8.8.8.8:443".parse().unwrap()],
+                ])),
+                responses: Mutex::new(VecDeque::from([
+                    hyper::Response::builder()
+                        .status(302)
+                        .header("location", &location)
+                        .body("")
+                        .unwrap()
+                        .into(),
+                    hyper::Response::builder()
+                        .status(200)
+                        .body("ok")
+                        .unwrap()
+                        .into(),
+                ])),
+                sent: Mutex::new(vec![]),
+                local: vec![],
+                delay: Duration::ZERO,
+            };
+            let result = fetch_with_network(
+                FetchRequest {
+                    url: "https://example.org/start".into(),
+                    kind: Kind::Html,
+                },
+                Instant::now() + Duration::from_secs(1),
+                &network,
+            )
+            .await;
+            if bytes == 4096 {
+                let response = result.unwrap();
+                assert_eq!(response.status, 200);
+                assert_eq!(response.body, "ok");
+                assert_eq!(
+                    *network.sent.lock().unwrap(),
+                    vec![
+                        (
+                            "https://example.org/start".into(),
+                            vec!["1.1.1.1:443".parse().unwrap()]
+                        ),
+                        (location, vec!["8.8.8.8:443".parse().unwrap()]),
+                    ]
+                );
+                assert!(network.answers.lock().unwrap().is_empty());
+            } else {
+                assert!(matches!(result, Err(FetchError::Unreadable)));
+                assert_eq!(network.sent.lock().unwrap().len(), 1);
+                assert_eq!(network.answers.lock().unwrap().len(), 1);
+                assert_eq!(network.responses.lock().unwrap().len(), 1);
+            }
+        }
     }
     #[tokio::test]
     async fn gzip_is_decoded_with_the_same_exact_four_million_byte_limit() {
@@ -527,6 +632,76 @@ mod tests {
                 vec!["1.1.1.1:443".parse().unwrap()]
             )]
         );
+    }
+    #[tokio::test]
+    async fn reference_contract_accepts_five_redirects_and_never_connects_a_seventh_hop() {
+        for redirects in [5, 6] {
+            let answers: Vec<Vec<SocketAddr>> = (0..=redirects)
+                .map(|index| vec![format!("8.8.8.{}:443", index + 1).parse().unwrap()])
+                .collect();
+            let mut responses: VecDeque<reqwest::Response> = (1..=redirects)
+                .map(|index| {
+                    hyper::Response::builder()
+                        .status(302)
+                        .header("location", format!("/hop{index}"))
+                        .body("")
+                        .unwrap()
+                        .into()
+                })
+                .collect();
+            responses.push_back(
+                hyper::Response::builder()
+                    .status(200)
+                    .body("complete")
+                    .unwrap()
+                    .into(),
+            );
+            let network = ControlledNetwork {
+                answers: Mutex::new(answers.clone().into()),
+                responses: Mutex::new(responses),
+                sent: Mutex::new(vec![]),
+                local: vec![],
+                delay: Duration::ZERO,
+            };
+            let result = fetch_with_network(
+                FetchRequest {
+                    url: "https://example.org/start".into(),
+                    kind: Kind::Json,
+                },
+                Instant::now() + Duration::from_secs(1),
+                &network,
+            )
+            .await;
+            // Six requests total: the original URL plus five admitted redirect targets.
+            let expected: Vec<_> = (0..6)
+                .map(|index| {
+                    (
+                        if index == 0 {
+                            "https://example.org/start".into()
+                        } else {
+                            format!("https://example.org/hop{index}")
+                        },
+                        answers[index].clone(),
+                    )
+                })
+                .collect();
+            assert_eq!(*network.sent.lock().unwrap(), expected);
+            if redirects == 5 {
+                let response = result.unwrap();
+                assert_eq!(response.status, 200);
+                assert_eq!(response.body, "complete");
+                assert!(network.answers.lock().unwrap().is_empty());
+                assert!(network.responses.lock().unwrap().is_empty());
+            } else {
+                assert!(matches!(result, Err(FetchError::Unreadable)));
+                // Neither DNS resolution nor connector dispatch for the sixth target occurred.
+                assert_eq!(
+                    *network.answers.lock().unwrap(),
+                    VecDeque::from([answers[6].clone()])
+                );
+                assert_eq!(network.responses.lock().unwrap().len(), 1);
+            }
+        }
     }
     #[tokio::test]
     async fn one_deadline_also_bounds_a_stalled_connector() {

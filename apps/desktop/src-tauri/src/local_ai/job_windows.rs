@@ -75,6 +75,83 @@ pub struct ProofQuota {
     pub holder_member: bool,
 }
 #[cfg(feature = "local-ai-proof")]
+#[derive(Default, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProofHandles {
+    pub created: bool,
+    pub fake_pid: u32,
+    pub job_flags: u32,
+    pub nul_flags: u32,
+    pub canary_flags: u32,
+    pub process_flags: u32,
+    pub thread_flags: u32,
+    pub parent_identity: bool,
+    pub nul_identity: bool,
+    pub exclusion: &'static str,
+    pub before_alive: bool,
+    pub after_alive: bool,
+    pub inspection_error: bool,
+    pub cleaned: bool,
+    pub cleanup_ms: u32,
+}
+#[cfg(feature = "local-ai-proof")]
+enum ProofStart<'a> {
+    Quota(HANDLE, &'a mut ProofQuota),
+    Handles(HANDLE, &'a mut ProofHandles),
+}
+#[cfg(feature = "local-ai-proof")]
+struct ProofCleanup {
+    process: HANDLE,
+    canary: Option<Handle>,
+    armed: bool,
+}
+#[cfg(feature = "local-ai-proof")]
+impl ProofCleanup {
+    fn finish(&mut self) -> (bool, u32) {
+        drop(self.canary.take());
+        let started = std::time::Instant::now();
+        let clean = unsafe {
+            let state = WaitForSingleObject(self.process, 0);
+            (state == WAIT_OBJECT_0
+                || (state == WAIT_TIMEOUT && TerminateProcess(self.process, 1).is_ok()))
+                && WaitForSingleObject(self.process, 5000) == WAIT_OBJECT_0
+        };
+        self.armed = false;
+        (
+            clean,
+            started.elapsed().as_millis().min(u32::MAX as u128) as u32,
+        )
+    }
+}
+#[cfg(feature = "local-ai-proof")]
+impl Drop for ProofCleanup {
+    fn drop(&mut self) {
+        if self.armed {
+            self.finish();
+        }
+    }
+}
+#[cfg(feature = "local-ai-proof")]
+unsafe fn proof_flags(handle: HANDLE) -> windows::core::Result<u32> {
+    let mut flags = 0;
+    GetHandleInformation(handle, &mut flags)?;
+    Ok(flags)
+}
+#[cfg(feature = "local-ai-proof")]
+unsafe fn proof_duplicate(source: HANDLE, handle: HANDLE) -> windows::core::Result<Handle> {
+    let mut duplicate = HANDLE::default();
+    DuplicateHandle(
+        source,
+        handle,
+        GetCurrentProcess(),
+        &mut duplicate,
+        0,
+        false,
+        DUPLICATE_SAME_ACCESS,
+    )?;
+    Ok(Handle(duplicate))
+}
+#[cfg(feature = "local-ai-proof")]
 fn quota_membership(job: HANDLE, holder: HANDLE) -> Result<(u32, bool), ErrorCode> {
     unsafe {
         let mut counts = JOBOBJECT_BASIC_ACCOUNTING_INFORMATION::default();
@@ -120,14 +197,33 @@ impl OwnedChild {
             launch,
             key,
             None,
-            Some((HANDLE(holder.as_raw_handle()), snapshot)),
+            Some(ProofStart::Quota(HANDLE(holder.as_raw_handle()), snapshot)),
+        )
+    }
+    #[cfg(feature = "local-ai-proof")]
+    pub fn proof_handle_start(
+        launch: &Launch,
+        key: &str,
+        sentinel: &std::process::Child,
+        snapshot: &mut ProofHandles,
+    ) -> Result<Self, ErrorCode> {
+        use std::os::windows::io::AsRawHandle;
+        snapshot.inspection_error = true;
+        Self::start_inner(
+            launch,
+            key,
+            None,
+            Some(ProofStart::Handles(
+                HANDLE(sentinel.as_raw_handle()),
+                snapshot,
+            )),
         )
     }
     fn start_inner(
         launch: &Launch,
         key: &str,
         cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
-        #[cfg(feature = "local-ai-proof")] mut quota: Option<(HANDLE, &mut ProofQuota)>,
+        #[cfg(feature = "local-ai-proof")] mut proof: Option<ProofStart<'_>>,
     ) -> Result<Self, ErrorCode> {
         #[cfg(feature = "local-ai-proof")]
         if let Ok(mut value) = TRANSITION.lock() {
@@ -152,7 +248,7 @@ impl OwnedChild {
             )
             .map_err(startup_error!(3))?;
             #[cfg(feature = "local-ai-proof")]
-            if let Some((holder, snapshot)) = quota.as_mut() {
+            if let Some(ProofStart::Quota(holder, snapshot)) = proof.as_mut() {
                 limits.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_ACTIVE_PROCESS;
                 limits.BasicLimitInformation.ActiveProcessLimit = 1;
                 SetInformationJobObject(
@@ -291,6 +387,32 @@ impl OwnedChild {
                     .encode_utf16()
                     .collect();
             let mut process = PROCESS_INFORMATION::default();
+            #[cfg(feature = "local-ai-proof")]
+            let mut canary = None;
+            #[cfg(feature = "local-ai-proof")]
+            if let Some(ProofStart::Handles(sentinel, snapshot)) = proof.as_mut() {
+                let mut handle = HANDLE::default();
+                DuplicateHandle(
+                    GetCurrentProcess(),
+                    *sentinel,
+                    GetCurrentProcess(),
+                    &mut handle,
+                    PROCESS_SYNCHRONIZE.0,
+                    true,
+                    DUPLICATE_HANDLE_OPTIONS(0),
+                )
+                .map_err(|_| ErrorCode::StartupFailed)?;
+                canary = Some(Handle(handle));
+                snapshot.job_flags = proof_flags(job.0).map_err(|_| ErrorCode::StartupFailed)?;
+                snapshot.nul_flags = proof_flags(nul.0).map_err(|_| ErrorCode::StartupFailed)?;
+                snapshot.canary_flags =
+                    proof_flags(handle).map_err(|_| ErrorCode::StartupFailed)?;
+                proof_flags(*sentinel).map_err(|_| ErrorCode::StartupFailed)?;
+                snapshot.parent_identity = CompareObjectHandles(*sentinel, handle).as_bool();
+                if !snapshot.parent_identity || WaitForSingleObject(*sentinel, 0) != WAIT_TIMEOUT {
+                    return Err(ErrorCode::StartupFailed);
+                }
+            }
             startup_stage!(10);
             let created = CreateProcessW(
                 PCWSTR(executable.as_ptr()),
@@ -310,7 +432,59 @@ impl OwnedChild {
                 .ok()
                 .map(|_| (Handle(process.hProcess), Handle(process.hThread)));
             #[cfg(feature = "local-ai-proof")]
-            if let Some((holder, snapshot)) = quota.as_mut() {
+            if let Some(ProofStart::Handles(sentinel, snapshot)) = proof.as_mut() {
+                snapshot.created = created.is_ok();
+                if let Some((process_handle, thread)) = &owned {
+                    // Armed before any fallible inspection; duplicate locals drop before this guard.
+                    let mut cleanup = ProofCleanup {
+                        process: process_handle.0,
+                        canary: canary.take(),
+                        armed: true,
+                    };
+                    snapshot.fake_pid = process.dwProcessId;
+                    let inspected = (|| -> windows::core::Result<()> {
+                        snapshot.process_flags = proof_flags(process_handle.0)?;
+                        snapshot.thread_flags = proof_flags(thread.0)?;
+                        snapshot.before_alive =
+                            WaitForSingleObject(process_handle.0, 0) == WAIT_TIMEOUT;
+                        let nul_copy = proof_duplicate(process_handle.0, nul.0)?;
+                        proof_flags(nul_copy.0)?;
+                        snapshot.nul_identity = CompareObjectHandles(nul_copy.0, nul.0).as_bool();
+                        let borrowed_canary = cleanup.canary.as_ref().unwrap().0;
+                        match proof_duplicate(process_handle.0, borrowed_canary) {
+                            Err(error)
+                                if error.code()
+                                    == windows::core::HRESULT::from_win32(
+                                        ERROR_INVALID_HANDLE.0,
+                                    ) =>
+                            {
+                                snapshot.exclusion = "invalid-handle"
+                            }
+                            Err(error) => return Err(error),
+                            Ok(candidate) => {
+                                proof_flags(candidate.0)?;
+                                proof_flags(*sentinel)?;
+                                SetLastError(ERROR_SUCCESS);
+                                if CompareObjectHandles(candidate.0, *sentinel).as_bool() {
+                                    snapshot.exclusion = "same-object";
+                                } else if GetLastError() == ERROR_NOT_SAME_OBJECT {
+                                    snapshot.exclusion = "different-object";
+                                } else {
+                                    return Err(windows::core::Error::from_win32());
+                                }
+                            }
+                        }
+                        snapshot.after_alive = WaitForSingleObject(process_handle.0, 0)
+                            == WAIT_TIMEOUT
+                            && WaitForSingleObject(*sentinel, 0) == WAIT_TIMEOUT;
+                        Ok(())
+                    })();
+                    snapshot.inspection_error = inspected.is_err();
+                    (snapshot.cleaned, snapshot.cleanup_ms) = cleanup.finish();
+                }
+            }
+            #[cfg(feature = "local-ai-proof")]
+            if let Some(ProofStart::Quota(holder, snapshot)) = proof.as_mut() {
                 snapshot.created = created.is_ok();
                 if let Some((process, _)) = &owned {
                     // A broken JOB_LIST must not let this proof's unexpected child escape.

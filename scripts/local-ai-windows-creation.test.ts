@@ -1,5 +1,30 @@
 import { expect, it } from "vitest";
 import { readLocalAiNativeOutput } from "./run-local-ai-proof.ts";
+const inherited = {
+  proof: "windows-handle-inheritance-v1",
+  ownerPid: 300,
+  sentinelPid: 301,
+  startedUnixMs: 1700000000000,
+  created: true,
+  fakePid: 302,
+  jobFlags: 0,
+  nulFlags: 1,
+  canaryFlags: 1,
+  processFlags: 0,
+  threadFlags: 0,
+  parentIdentity: true,
+  nulIdentity: true,
+  exclusion: "invalid-handle",
+  beforeAlive: true,
+  afterAlive: true,
+  inspectionError: false,
+  cleaned: true,
+  cleanupMs: 25,
+  sentinelAlive: true,
+  sentinelResponsive: true,
+  sentinelReleased: true,
+  passed: true,
+};
 
 export const creation = {
   created: false,
@@ -50,14 +75,20 @@ const records = [
 ];
 it("requires actual Windows creation-quota coverage in addition to parent death", () => {
   expect(() =>
-    readLocalAiNativeOutput([...records, marker].join("\n"), "", "windows")
+    readLocalAiNativeOutput(
+      [...records, JSON.stringify(inherited), marker].join("\n"),
+      "",
+      "windows",
+    )
   ).toThrow();
 });
 it("accepts only bounded closed successful quota-rejection evidence", () => {
   const output = (value: unknown) =>
-    [...records, JSON.stringify(value), marker].join("\n");
+    [...records, JSON.stringify(value), JSON.stringify(inherited), marker].join(
+      "\n",
+    );
   expect(readLocalAiNativeOutput(output(creation), "", "windows")).toHaveLength(
-    4,
+    5,
   );
   for (
     const change of [

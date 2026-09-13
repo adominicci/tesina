@@ -951,6 +951,90 @@ mod windows_death {
             std::thread::sleep(Duration::from_millis(10));
         }
     }
+    pub fn handles(executable: &std::path::Path) {
+        let fixture = tempfile::tempdir().unwrap();
+        let root = fixture.path();
+        let proof = std::env::current_exe().unwrap();
+        let cwd = std::env::current_dir().unwrap();
+        let mut sentinel = Parent {
+            child: Command::new(proof)
+                .args([std::ffi::OsStr::new("--sentinel"), root.as_os_str()])
+                .current_dir(cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+                .unwrap(),
+            release: Some(root.join("sentinel-release")),
+        };
+        let ready = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < ready && !fixed_file(&root.join("sentinel-ready"), b"ready") {
+            assert!(sentinel.live(), "handle fixture setup failed");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(
+            fixed_file(&root.join("sentinel-ready"), b"ready") && sentinel.live(),
+            "handle fixture setup timeout"
+        );
+        let model = root.join("loading.gguf");
+        std::fs::write(&model, b"synthetic fixture, not model weights").unwrap();
+        let started_unix_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis();
+        let mut snapshot = tesina_lib::local_ai::ProofHandles::default();
+        let result = tesina_lib::local_ai::proof_handle_child(
+            executable.to_owned(),
+            model,
+            &sentinel.child,
+            &mut snapshot,
+        );
+        let created = result.is_ok();
+        drop(result); // All inspection duplicates and exact-fake disposal preceded Job closure.
+        let alive = sentinel.live();
+        std::fs::write(root.join("sentinel-ping"), b"ping").unwrap();
+        let pong = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < pong
+            && !fixed_file(&root.join("sentinel-pong"), b"alive")
+            && sentinel.live()
+        {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let responsive = fixed_file(&root.join("sentinel-pong"), b"alive") && sentinel.live();
+        std::fs::write(root.join("sentinel-release"), b"release").unwrap();
+        let released = unsafe { WaitForSingleObject(sentinel.handle(), 1000) == WAIT_OBJECT_0 }
+            && sentinel
+                .child
+                .try_wait()
+                .unwrap()
+                .is_some_and(|status| status.success());
+        let passed = created
+            && snapshot.created
+            && snapshot.parent_identity
+            && snapshot.nul_identity
+            && snapshot.job_flags & 1 == 0
+            && snapshot.process_flags & 1 == 0
+            && snapshot.thread_flags & 1 == 0
+            && snapshot.nul_flags & 1 == 1
+            && snapshot.canary_flags & 1 == 1
+            && matches!(snapshot.exclusion, "invalid-handle" | "different-object")
+            && snapshot.before_alive
+            && snapshot.after_alive
+            && !snapshot.inspection_error
+            && snapshot.cleaned
+            && snapshot.cleanup_ms < 5000
+            && alive
+            && responsive
+            && released;
+        let mut report = serde_json::to_value(snapshot).unwrap();
+        let object = report.as_object_mut().unwrap();
+        for (key, value) in json!({"proof":"windows-handle-inheritance-v1", "ownerPid":std::process::id(), "sentinelPid":sentinel.child.id(),
+            "startedUnixMs":started_unix_ms,"sentinelAlive":alive,"sentinelResponsive":responsive,"sentinelReleased":released,"passed":passed}).as_object().unwrap() {
+            object.insert(key.clone(), value.clone());
+        }
+        println!("{report}");
+        assert!(passed, "handle inheritance proof failed");
+    }
     pub fn quota(executable: &std::path::Path) {
         let fixture = tempfile::tempdir().unwrap();
         let holder_root = fixture.path().join("holder");
@@ -1559,7 +1643,7 @@ fn main() {
         #[cfg(target_os = "macos")]
         parent_death_phases(&executable).await;
         #[cfg(windows)]
-        { windows_death::run(&executable); windows_death::quota(&executable); }
+        { windows_death::run(&executable); windows_death::quota(&executable); windows_death::handles(&executable); }
         println!("local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending");
     });
 }

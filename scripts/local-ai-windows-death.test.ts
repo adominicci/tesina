@@ -1,5 +1,30 @@
 import { expect, it } from "vitest";
 import { readLocalAiNativeOutput } from "./run-local-ai-proof.ts";
+const inherited = {
+  proof: "windows-handle-inheritance-v1",
+  ownerPid: 300,
+  sentinelPid: 301,
+  startedUnixMs: 1700000000000,
+  created: true,
+  fakePid: 302,
+  jobFlags: 0,
+  nulFlags: 1,
+  canaryFlags: 1,
+  processFlags: 0,
+  threadFlags: 0,
+  parentIdentity: true,
+  nulIdentity: true,
+  exclusion: "invalid-handle",
+  beforeAlive: true,
+  afterAlive: true,
+  inspectionError: false,
+  cleaned: true,
+  cleanupMs: 25,
+  sentinelAlive: true,
+  sentinelResponsive: true,
+  sentinelReleased: true,
+  passed: true,
+};
 const creation = {
   proof: "windows-creation-quota-v1",
   created: false,
@@ -55,10 +80,11 @@ const output = (changed: Record<string, unknown> = {}) =>
     JSON.stringify({ ...record, ...changed }),
     JSON.stringify({ ...record, phase: "read-generation" }),
     JSON.stringify(creation),
+    JSON.stringify(inherited),
     marker,
   ].join("\n");
 it("accepts only two ordered Windows handle proofs with live responsive sentinel", () => {
-  expect(readLocalAiNativeOutput(output(), "", "windows")).toHaveLength(4);
+  expect(readLocalAiNativeOutput(output(), "", "windows")).toHaveLength(5);
   for (
     const changed of [
       { parentSignalled: false },

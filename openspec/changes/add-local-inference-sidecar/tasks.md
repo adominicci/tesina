@@ -95,7 +95,7 @@
   IPv4-mapped IPv6/numeric forms, mixed DNS answers, DNS rebinding, local interface
   addresses, each redirect hop, proxy environment, decompressed byte limits,
   and total timeout without reaching the loopback trap (E7).
-- [ ] 5.2 Migrate only the existing autofill transport and remove the generic
+- [x] 5.2 Migrate only the existing autofill transport and remove the generic
   HTTP plugin grant/registration after failing compatibility tests; verify
   DOI preference, ISBN/author handling, public HTTP(S) HTML metadata, timeout and
   existing error categories remain equivalent, and private/intranet/nonstandard

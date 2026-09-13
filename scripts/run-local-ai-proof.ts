@@ -148,10 +148,10 @@ export function readLocalAiNativeOutput(
   if (
     stderr || stdout.length > 64 * 1024 || lines.at(-1) !== marker ||
     !(platform === "windows"
-      ? lines.length === 4
+      ? lines.length === 5
       : [1, 3].includes(lines.length)) ||
     !["darwin", "windows"].includes(platform) ||
-    (platform === "windows" && lines.length !== 4)
+    (platform === "windows" && lines.length !== 5)
   ) throw new Error("local-ai-native-proof-failed");
   for (const [index, line] of lines.slice(0, -1).entries()) {
     let value;
@@ -161,6 +161,47 @@ export function readLocalAiNativeOutput(
       throw new Error("local-ai-native-proof-failed");
     }
     if (platform === "windows") {
+      if (index === 3) {
+        if (
+          !value || typeof value !== "object" || Array.isArray(value) ||
+          Object.keys(value).length !== 23 ||
+          value.proof !== "windows-handle-inheritance-v1" ||
+          ![
+            "created",
+            "parentIdentity",
+            "nulIdentity",
+            "beforeAlive",
+            "afterAlive",
+            "cleaned",
+            "sentinelAlive",
+            "sentinelResponsive",
+            "sentinelReleased",
+            "passed",
+          ].every((key) => value[key] === true) ||
+          value.inspectionError !== false ||
+          !["invalid-handle", "different-object"].includes(value.exclusion) ||
+          ![value.ownerPid, value.sentinelPid, value.fakePid].every((n) =>
+            Number.isInteger(n) && n > 1 && n <= 4294967295
+          ) ||
+          new Set([value.ownerPid, value.sentinelPid, value.fakePid]).size !==
+            3 ||
+          ![
+            value.jobFlags,
+            value.nulFlags,
+            value.canaryFlags,
+            value.processFlags,
+            value.threadFlags,
+          ].every((n) => Number.isInteger(n) && n >= 0 && n <= 3) ||
+          (value.jobFlags & 1) !== 0 || (value.processFlags & 1) !== 0 ||
+          (value.threadFlags & 1) !== 0 ||
+          (value.nulFlags & 1) !== 1 || (value.canaryFlags & 1) !== 1 ||
+          !Number.isSafeInteger(value.startedUnixMs) ||
+          value.startedUnixMs <= 0 ||
+          !Number.isInteger(value.cleanupMs) || value.cleanupMs < 0 ||
+          value.cleanupMs >= 5000
+        ) throw new Error("local-ai-native-proof-failed");
+        continue;
+      }
       if (index === 2) {
         if (
           !value || typeof value !== "object" || Array.isArray(value) ||
@@ -533,6 +574,7 @@ async function main() {
       console.log(JSON.stringify({
         proof: "windows-parent-death-checkpoint-v1",
         creation: JSON.parse(nativeProcessOutput[2]),
+        inheritance: JSON.parse(nativeProcessOutput[3]),
         phases: nativeProcessOutput.slice(0, 2).map((line) => JSON.parse(line)),
       }));
     }

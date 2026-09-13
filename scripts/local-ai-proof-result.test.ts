@@ -39,6 +39,13 @@ describe("local inference native proof result", () => {
       windowsCode: -2147024894,
       fakeBind: 2,
       fakeBindCode: 10022,
+      transition: {
+        site: 2,
+        initial: 1,
+        eventual: 2,
+        elapsedMs: 1,
+        exitCode: 23,
+      },
     };
     expect(readLocalAiNativeFailure(JSON.stringify(diagnostic), 101)).toEqual({
       exitCode: 101,
@@ -60,6 +67,43 @@ describe("local inference native proof result", () => {
         { fakeBind: 4 },
         { fakeBindCode: "RAW_ERROR" },
         { fakeBindCode: 2147483648 },
+        {
+          transition: {
+            site: 3,
+            initial: 1,
+            eventual: 2,
+            elapsedMs: 1,
+            exitCode: 23,
+          },
+        },
+        {
+          transition: {
+            site: 2,
+            initial: 1,
+            eventual: 2,
+            elapsedMs: -1,
+            exitCode: 23,
+          },
+        },
+        {
+          transition: {
+            site: 2,
+            initial: 1,
+            eventual: 1,
+            elapsedMs: 250,
+            exitCode: 23,
+          },
+        },
+        {
+          transition: {
+            site: 2,
+            initial: 1,
+            eventual: 2,
+            elapsedMs: 1,
+            exitCode: 23,
+            raw: "SECRET",
+          },
+        },
       ]
     ) {
       expect(() =>
@@ -71,7 +115,12 @@ describe("local inference native proof result", () => {
     }
     expect(
       readLocalAiNativeFailure(
-        JSON.stringify({ ...diagnostic, fakeBind: 0, fakeBindCode: null }),
+        JSON.stringify({
+          ...diagnostic,
+          fakeBind: 0,
+          fakeBindCode: null,
+          transition: null,
+        }),
         101,
       ).diagnostic.fakeBindCode,
     ).toBeNull();

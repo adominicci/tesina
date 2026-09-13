@@ -15,6 +15,22 @@ pub fn proof_startup_snapshot() -> (u8, i32) {
     let value = STARTUP_SNAPSHOT.load(std::sync::atomic::Ordering::SeqCst);
     ((value >> 32) as u8, value as u32 as i32)
 }
+#[cfg(feature = "local-ai-proof")]
+#[derive(Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProofTransition {
+    site: u8,
+    initial: u8,
+    eventual: u8,
+    elapsed_ms: u32,
+    exit_code: Option<u32>,
+}
+#[cfg(feature = "local-ai-proof")]
+static TRANSITION: std::sync::Mutex<Option<ProofTransition>> = std::sync::Mutex::new(None);
+#[cfg(feature = "local-ai-proof")]
+pub fn proof_transition_snapshot() -> Option<ProofTransition> {
+    TRANSITION.try_lock().ok().and_then(|value| *value)
+}
 macro_rules! startup_stage {
     ($stage:expr) => {
         #[cfg(feature = "local-ai-proof")]
@@ -55,6 +71,10 @@ impl OwnedChild {
         key: &str,
         cancellation: Option<&tokio::sync::watch::Receiver<bool>>,
     ) -> Result<Self, ErrorCode> {
+        #[cfg(feature = "local-ai-proof")]
+        if let Ok(mut value) = TRANSITION.lock() {
+            *value = None;
+        }
         startup_stage!(1);
         launch.verify()?;
         if cancellation.is_some_and(|signal| *signal.borrow()) {
@@ -205,6 +225,80 @@ impl OwnedChild {
     }
     pub fn alive(&mut self) -> bool {
         unsafe { WaitForSingleObject(self.process.0, 0) == WAIT_TIMEOUT }
+    }
+    #[cfg(feature = "local-ai-proof")]
+    pub async fn proof_transport_error(
+        &mut self,
+        site: u8,
+        deadline: tokio::time::Instant,
+    ) -> ErrorCode {
+        let initial = unsafe { WaitForSingleObject(self.process.0, 0) };
+        // Freeze the original policy BEFORE any observation can let exit progress.
+        let original = if initial == WAIT_TIMEOUT {
+            ErrorCode::InvalidResponse
+        } else {
+            ErrorCode::Crash
+        };
+        let state = |value| {
+            if value == WAIT_TIMEOUT {
+                1
+            } else if value == WAIT_OBJECT_0 {
+                2
+            } else {
+                3
+            }
+        };
+        let mut observation = ProofTransition {
+            site,
+            initial: state(initial),
+            eventual: 3,
+            elapsed_ms: 0,
+            exit_code: None,
+        };
+        let mut duplicate = HANDLE::default();
+        let duplicated = unsafe {
+            DuplicateHandle(
+                GetCurrentProcess(),
+                self.process.0,
+                GetCurrentProcess(),
+                &mut duplicate,
+                0,
+                false,
+                DUPLICATE_SAME_ACCESS,
+            )
+        };
+        if duplicated.is_ok() {
+            let duplicate = Handle(duplicate);
+            let waited = tokio::task::spawn_blocking(move || {
+                let duplicate = duplicate; // Move the Send owner, not a captured raw HANDLE field.
+                let started = std::time::Instant::now();
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                let milliseconds = remaining.as_millis().min(250) as u32;
+                let result = unsafe { WaitForSingleObject(duplicate.0, milliseconds) };
+                observation.eventual = state(result);
+                observation.elapsed_ms =
+                    started.elapsed().as_millis().try_into().unwrap_or(u32::MAX);
+                if result == WAIT_OBJECT_0 {
+                    let mut code = 0;
+                    if unsafe { GetExitCodeProcess(duplicate.0, &mut code) }.is_ok() {
+                        observation.exit_code = Some(code);
+                    }
+                }
+                observation
+            })
+            .await;
+            if let Ok(value) = waited {
+                observation = value;
+            }
+        }
+        // The worker never publishes. Dropping this future on cancel/deadline
+        // discards its late measurement while its duplicate stays owned to exit.
+        if tokio::time::Instant::now() < deadline {
+            if let Ok(mut value) = TRANSITION.lock() {
+                *value = Some(observation);
+            }
+        }
+        original
     }
     pub fn stop(&mut self) -> Result<(), ErrorCode> {
         // Kill-on-close containment also works when installation exits inside native code.

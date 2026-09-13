@@ -107,7 +107,7 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
   }
   if (
     !value || typeof value !== "object" || Array.isArray(value) ||
-    Object.keys(value).length !== 12 ||
+    Object.keys(value).length !== 13 ||
     value.proof !== "local-ai-native-panic-v1" ||
     !Number.isInteger(value.phase) || value.phase < 0 || value.phase > 11 ||
     !Number.isInteger(value.source) || value.source < 0 || value.source > 7 ||
@@ -129,6 +129,29 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
       Number.isInteger(n) && n >= 0 && n <= 4294967295
     )
   ) return fail();
+  const probe = value.transition;
+  let transition = null;
+  if (probe !== null) {
+    if (
+      !probe || typeof probe !== "object" || Array.isArray(probe) ||
+      Object.keys(probe).length !== 5 || ![1, 2].includes(probe.site) ||
+      ![1, 2, 3].includes(probe.initial) ||
+      ![1, 2, 3].includes(probe.eventual) ||
+      !Number.isInteger(probe.elapsedMs) || probe.elapsedMs < 0 ||
+      probe.elapsedMs > 4294967295 ||
+      !(probe.exitCode === null ||
+        (Number.isInteger(probe.exitCode) && probe.exitCode >= 0 &&
+          probe.exitCode <= 4294967295)) ||
+      (probe.eventual !== 2 && probe.exitCode !== null)
+    ) return fail();
+    transition = {
+      site: probe.site,
+      initial: probe.initial,
+      eventual: probe.eventual,
+      elapsedMs: probe.elapsedMs,
+      exitCode: probe.exitCode,
+    };
+  }
   return {
     exitCode,
     diagnostic: {
@@ -144,6 +167,7 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
       windowsCode: value.windowsCode,
       fakeBind: value.fakeBind,
       fakeBindCode: value.fakeBindCode,
+      transition,
     },
   };
 }

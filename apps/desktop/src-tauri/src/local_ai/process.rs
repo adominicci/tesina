@@ -9,10 +9,10 @@ mod platform;
 #[cfg(windows)]
 #[path = "job_windows.rs"]
 mod platform;
-#[cfg(all(windows, feature = "local-ai-proof"))]
-pub use platform::proof_startup_snapshot;
 #[cfg(any(target_os = "macos", windows))]
 pub use platform::{guardian_entry, OwnedChild};
+#[cfg(all(windows, feature = "local-ai-proof"))]
+pub use platform::{proof_startup_snapshot, proof_transition_snapshot};
 
 pub const FLAGS: &[&str] = &[
     "--host",

@@ -59,13 +59,10 @@ async fn exchange(
         .body(Full::new(Bytes::from(bytes)))
         .map_err(|_| ErrorCode::InvalidRequest)?;
     let operation = async {
-        let response = sender.send_request(request).await.map_err(|_| {
-            if child.alive() {
-                ErrorCode::InvalidResponse
-            } else {
-                ErrorCode::Crash
-            }
-        })?;
+        let response = match sender.send_request(request).await {
+            Ok(response) => response,
+            Err(_) => return Err(transport_error(child, 1, deadline).await),
+        };
         if response.status() == 503 {
             return Err(ErrorCode::Busy);
         }
@@ -75,13 +72,10 @@ async fn exchange(
         let mut body = response.into_body();
         let mut bytes = Vec::new();
         while let Some(frame) = body.frame().await {
-            let frame = frame.map_err(|_| {
-                if child.alive() {
-                    ErrorCode::InvalidResponse
-                } else {
-                    ErrorCode::Crash
-                }
-            })?;
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(_) => return Err(transport_error(child, 2, deadline).await),
+            };
             if let Some(data) = frame.data_ref() {
                 if bytes.len() + data.len() > OUTPUT_BYTES {
                     return Err(ErrorCode::InvalidResponse);
@@ -97,6 +91,21 @@ async fn exchange(
     tokio::time::timeout_at(deadline, operation)
         .await
         .map_err(|_| ErrorCode::Timeout)?
+}
+
+async fn transport_error(child: &mut OwnedChild, _site: u8, _deadline: Instant) -> ErrorCode {
+    #[cfg(all(windows, feature = "local-ai-proof"))]
+    {
+        child.proof_transport_error(_site, _deadline).await
+    }
+    #[cfg(not(all(windows, feature = "local-ai-proof")))]
+    {
+        if child.alive() {
+            ErrorCode::InvalidResponse
+        } else {
+            ErrorCode::Crash
+        }
+    }
 }
 
 pub async fn generate(

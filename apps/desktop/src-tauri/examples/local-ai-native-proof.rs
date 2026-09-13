@@ -90,8 +90,13 @@ fn diagnostic_hook() {
         } else {
             "null".to_owned()
         };
+        #[cfg(windows)]
+        let transition = serde_json::to_string(&tesina_lib::local_ai::proof_transition_snapshot())
+            .unwrap_or_else(|_| "null".into());
+        #[cfg(not(windows))]
+        let transition = "null";
         let _ = writeln!(std::io::stderr().lock(),
-            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column},\"result\":{},\"childStarted\":{},\"fixtureMarker\":{},\"windowsStage\":{windows_stage},\"windowsCode\":{windows_code},\"fakeBind\":{},\"fakeBindCode\":{bind_code}}}",
+            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column},\"result\":{},\"childStarted\":{},\"fixtureMarker\":{},\"windowsStage\":{windows_stage},\"windowsCode\":{windows_code},\"fakeBind\":{},\"fakeBindCode\":{bind_code},\"transition\":{transition}}}",
             FAILURE_PHASE.load(Ordering::SeqCst), FAILURE_RESULT.load(Ordering::SeqCst),
             CHILD_STARTED.load(Ordering::SeqCst), FIXTURE_MARKER.load(Ordering::SeqCst), FAKE_BIND.load(Ordering::SeqCst));
     }));

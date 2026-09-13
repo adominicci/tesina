@@ -2,6 +2,28 @@ import { describe, expect, it } from "vitest";
 import { parseNativeManualInputMessage } from "./nativeManualInputProtocol.ts";
 
 describe("native manual-input protocol", () => {
+  it("validates the collapsed selection before requesting native paste", () => {
+    expect(parseNativeManualInputMessage({
+      version: 1,
+      stage: "collapsed",
+      documentSize: 500,
+      selectionPos: 75,
+    })).toEqual({
+      version: 1,
+      stage: "collapsed",
+      documentSize: 500,
+      selectionPos: 75,
+    });
+    expect(() =>
+      parseNativeManualInputMessage({
+        version: 1,
+        stage: "collapsed",
+        documentSize: 500,
+        selectionPos: 501,
+      })
+    ).toThrow();
+  });
+
   it("accepts finite viewport geometry that visibly straddles the gap", () => {
     expect(parseNativeManualInputMessage({
       version: 1,

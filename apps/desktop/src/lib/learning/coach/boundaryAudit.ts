@@ -66,6 +66,7 @@ export function auditProductionImports(
   entryPoints: readonly string[],
   forbiddenTokens: readonly string[],
   aliases: Readonly<Record<string, string>> = {},
+  leafPaths: ReadonlySet<string> = new Set(),
 ): BoundaryFinding[] {
   const byPath = new Map(files.map((file) => [file.path, file]));
   const paths = new Set(byPath.keys());
@@ -85,6 +86,7 @@ export function auditProductionImports(
     for (const token of forbiddenTokens) {
       if (file.source.includes(token)) findings.push({ path, token });
     }
+    if (leafPaths.has(path)) continue;
     for (const specifier of importSpecifiers(file.source)) {
       const resolved = resolveProductionImport(
         path,

@@ -58,6 +58,26 @@ function sameIdentity(
     left.snapshotId === right.snapshotId;
 }
 
+function fixedSessionForIssues(
+  issues: readonly MappedCoachIssue[],
+  prior: FixedCoachSession | null,
+): FixedCoachSession {
+  let index = 0;
+  if (prior !== null) {
+    const priorIdentity = createCoachSuppression(prior.issue, "dismiss");
+    const matchingIndex = issues.findIndex((issue) =>
+      suppressionMatchesIssue(issue, priorIdentity)
+    );
+    if (matchingIndex >= 0) index = matchingIndex;
+  }
+  return Object.freeze({
+    kind: "fixed-coach-session" as const,
+    issue: issues[index]!,
+    position: index + 1,
+    total: issues.length,
+  });
+}
+
 export function createWritingCoachController(
   essayId: string,
   options: WritingCoachControllerOptions = {},
@@ -112,16 +132,10 @@ export function createWritingCoachController(
       setState({ status: "analyzing", issues: visibleIssues, fixed: null });
       return;
     }
-    const fixed: FixedCoachSession = state.fixed ?? Object.freeze({
-      kind: "fixed-coach-session" as const,
-      issue: visibleIssues[0]!,
-      position: 1,
-      total: visibleIssues.length,
-    });
     setState({
       status: "issues",
       issues: visibleIssues,
-      fixed,
+      fixed: fixedSessionForIssues(visibleIssues, state.fixed),
     });
   };
 
@@ -307,14 +321,23 @@ export function createWritingCoachController(
         passage: { ...state.fixed.issue.passage, revision },
         editorRange,
       };
-      const fixed = Object.freeze({
-        ...state.fixed,
-        issue: Object.freeze({
-          ...provisional,
-          identity: mappedIssueIdentity(provisional),
-        }),
+      const issue = Object.freeze({
+        ...provisional,
+        identity: mappedIssueIdentity(provisional),
       });
-      setState({ ...state, fixed });
+      const priorIdentity = state.fixed.issue.identity;
+      const issues = state.issues.map((candidate) =>
+        candidate.identity === priorIdentity ? issue : candidate
+      );
+      const mappedFixed = Object.freeze({
+        ...state.fixed,
+        issue,
+      });
+      setState({
+        ...state,
+        issues,
+        fixed: fixedSessionForIssues(issues, mappedFixed),
+      });
     },
     suppressCurrent(action: CoachSuppression["action"]): void {
       if (state.status !== "issues") return;

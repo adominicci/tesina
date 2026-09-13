@@ -232,7 +232,7 @@ describe("stale analysis rejection", () => {
 });
 
 describe("fixed question-led sessions", () => {
-  it("keeps the selected full passage fixed across unrelated background analysis", async () => {
+  it("does not retain a fixed passage absent from refreshed results", async () => {
     vi.useFakeTimers();
     const controller = createWritingCoachController("essay-1");
     controller.updateSnapshot(snapshot(1));
@@ -250,9 +250,9 @@ describe("fixed question-led sessions", () => {
     const updated = controller.getState();
     expect(updated.status).toBe("issues");
     if (updated.status === "issues") {
-      expect(updated.fixed).toBe(fixed);
+      expect(updated.fixed.issue).toBe(updated.issues[0]);
       expect(updated.fixed.issue.passage.text).toBe(
-        "The policy changed in many ways during review.",
+        "Various aspects shaped a separate paragraph.",
       );
       expect(updated.issues[0]?.passage.revision).toBe(2);
     }
@@ -405,6 +405,69 @@ describe("fixed question-led sessions", () => {
       3,
     );
     expect(controller.getState().fixed).toBeNull();
+    controller.destroy();
+  });
+
+  it("keeps deterministic navigation aligned after mapping the selected source", async () => {
+    vi.useFakeTimers();
+    const controller = createWritingCoachController("essay-1");
+    const text =
+      "It is important to note that the policy changed in many ways in order to complete review.";
+    controller.updateSnapshot(snapshot(1, text));
+    controller.enterStudy();
+    await vi.advanceTimersByTimeAsync(0);
+    const initial = controller.getState();
+    if (initial.status !== "issues") throw new Error("expected issues");
+    expect(initial.issues).toHaveLength(3);
+    controller.selectIssue(initial.issues[1]!.identity);
+
+    controller.mapFixedSource(
+      new Mapping([new StepMap([1, 0, 5])]),
+      () => initial.issues[1]!.issue.observedText,
+      2,
+    );
+
+    const mapped = controller.getState();
+    if (mapped.status !== "issues") throw new Error("expected issues");
+    expect(mapped.fixed.issue).toBe(mapped.issues[1]);
+    expect(mapped.fixed.position).toBe(2);
+    controller.nextIssue();
+    expect(controller.getState().fixed?.position).toBe(3);
+    controller.previousIssue();
+    expect(controller.getState().fixed?.position).toBe(2);
+    controller.destroy();
+  });
+
+  it("rebinds refreshed navigation to a matching current issue or the first visible issue", async () => {
+    vi.useFakeTimers();
+    const controller = createWritingCoachController("essay-1");
+    const text =
+      "It is important to note that the policy changed in many ways in order to complete review.";
+    controller.updateSnapshot(snapshot(1, text));
+    controller.enterStudy();
+    await vi.advanceTimersByTimeAsync(0);
+    const initial = controller.getState();
+    if (initial.status !== "issues") throw new Error("expected issues");
+    controller.selectIssue(initial.issues[1]!.identity);
+
+    controller.updateSnapshot(snapshot(2, text));
+    await vi.advanceTimersByTimeAsync(300);
+    const refreshed = controller.getState();
+    if (refreshed.status !== "issues") throw new Error("expected issues");
+    expect(refreshed.fixed.issue).toBe(refreshed.issues[1]);
+    expect(refreshed.fixed.position).toBe(2);
+    controller.nextIssue();
+    expect(controller.getState().fixed?.position).toBe(3);
+
+    controller.updateSnapshot(snapshot(
+      3,
+      "The policy changed in many ways during review.",
+    ));
+    await vi.advanceTimersByTimeAsync(300);
+    const fallback = controller.getState();
+    if (fallback.status !== "issues") throw new Error("expected issues");
+    expect(fallback.fixed.issue).toBe(fallback.issues[0]);
+    expect(fallback.fixed.position).toBe(1);
     controller.destroy();
   });
 

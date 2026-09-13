@@ -17,6 +17,14 @@ const ARCHIVED_TASKS = new URL(
   "../../../../../../openspec/changes/archive/2026-08-23-add-writing-coach-experience/tasks.md",
   import.meta.url,
 );
+const APP_SOURCE_ALIASES = {
+  "$lib/": new URL("lib/", APP_SRC_DIR).pathname,
+};
+// Coach rendering may use the generated Paraglide facade, but its locale
+// runtime is pre-existing host infrastructure rather than coach persistence.
+const APP_SOURCE_LEAVES = new Set([
+  new URL("lib/paraglide/messages.js", APP_SRC_DIR).pathname,
+]);
 
 async function sourceFiles(directory: URL): Promise<URL[]> {
   const result: URL[] = [];
@@ -121,8 +129,8 @@ describe("hidden coach module boundary", () => {
       file.path.startsWith(COACH_EXPERIENCE_DIR.pathname)
     ).map((file) => file.path);
     expect(auditProductionImports(files, entryPoints, forbidden, {
-      "$lib/editor/": new URL("lib/editor/", APP_SRC_DIR).pathname,
-    })).toEqual([]);
+      ...APP_SOURCE_ALIASES,
+    }, APP_SOURCE_LEAVES)).toEqual([]);
   });
 
   it("detects forbidden code in a transitively imported production helper", () => {
@@ -165,6 +173,30 @@ describe("hidden coach module boundary", () => {
       ),
     ).toEqual([{
       path: "/app/src/lib/editor/helper.ts",
+      token: "localStorage",
+    }]);
+  });
+
+  it("detects forbidden code in a transitively imported non-editor $lib helper", () => {
+    const files: SourceFile[] = [
+      {
+        path: "/app/src/lib/learning/coachExperience/controller.ts",
+        source: 'import "$lib/shared/helper.ts";',
+      },
+      {
+        path: "/app/src/lib/shared/helper.ts",
+        source: "export const persisted = localStorage.getItem('coach');",
+      },
+    ];
+    expect(
+      auditProductionImports(
+        files,
+        ["/app/src/lib/learning/coachExperience/controller.ts"],
+        ["localStorage"],
+        { "$lib/": "/app/src/lib/" },
+      ),
+    ).toEqual([{
+      path: "/app/src/lib/shared/helper.ts",
       token: "localStorage",
     }]);
   });

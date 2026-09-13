@@ -281,6 +281,47 @@ async function prove() {
   await invoke("local_inference_prepare_shutdown");
   await coordinate("finished");
   await invoke("local_inference_resume");
+  await coordinate("arm-terminal");
+  const raceRequest = {
+    ...cancellationRequest,
+    requestId: crypto.randomUUID(),
+  };
+  let raceTerminals = 0;
+  const raceTerminalCount = () => raceTerminals;
+  const race = provider.run(raceRequest).then((result) => {
+    raceTerminals++;
+    return result;
+  });
+  await coordinate("terminal-ready");
+  if (raceTerminalCount() !== 0) throw new Error("premature-terminal");
+  const raceCancelAt = performance.now();
+  await provider.cancel(raceRequest.requestId);
+  // Native coordination requires this exact held request to remain active with
+  // its cancellation signal set before releasing the successful proxy outcome.
+  await coordinate("release-cancelled-terminal");
+  const raceResult = await race;
+  if (
+    raceResult.status !== "error" || raceResult.error !== "cancelled" ||
+    raceResult.requestId !== raceRequest.requestId ||
+    raceResult.documentRevision !== 7 || raceResult.task !== "writingCoach" ||
+    raceTerminalCount() !== 1
+  ) throw new Error("pending-cancel-wins");
+  acceptedIds.add(raceRequest.requestId);
+  await invoke("local_inference_prepare_shutdown");
+  await coordinate("terminal-cleaned");
+  if (performance.now() - raceCancelAt >= 5000) throw new Error("race-cleanup");
+  await invoke("local_inference_resume");
+  await invoke("local_inference_cancel", { requestId: raceRequest.requestId });
+  const raceDuplicate = await invoke<{
+    status: string;
+    error: string;
+    requestId: string;
+  }>("local_inference_run", { request: raceRequest });
+  if (
+    raceDuplicate.status !== "error" || raceDuplicate.error !== "busy" ||
+    raceDuplicate.requestId !== raceRequest.requestId ||
+    raceTerminalCount() !== 1
+  ) throw new Error("race-completed-noop");
   // Count only acknowledged native records, never provider-local tombstones.
   for (let attempt = 0; acceptedIds.size < 32 && attempt < 33; attempt++) {
     const requestId = crypto.randomUUID();
@@ -324,6 +365,7 @@ async function prove() {
     readCancellation: true,
     completionOrdering: true,
     freshGeneration: true,
+    pendingCancelWins: true,
     passed: true,
   });
 }
@@ -342,6 +384,7 @@ prove().catch(async () => {
     readCancellation: false,
     completionOrdering: false,
     freshGeneration: false,
+    pendingCancelWins: false,
     passed: false,
   });
 });

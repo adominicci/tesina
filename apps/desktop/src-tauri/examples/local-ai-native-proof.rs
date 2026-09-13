@@ -1,6 +1,39 @@
 //! Process/socket proof only. This is not platform-webview acceptance.
 use serde_json::json;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+
+// Nonshipping diagnostics: fixed IDs only, never panic payloads or paths.
+static FAILURE_PHASE: AtomicU8 = AtomicU8::new(0);
+static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
+fn diagnostic_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        if FAILURE_REPORTED.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        let (source, line, column) = info.location().map_or((0, 0, 0), |location| {
+            let file = location.file().replace('\\', "/");
+            let sources = [
+                "examples/local-ai-native-proof.rs",
+                "src/local_ai/job_windows.rs",
+                "src/local_ai/process.rs",
+                "src/local_ai/guardian_macos.rs",
+                "src/local_ai/socket.rs",
+                "src/local_ai/proxy.rs",
+                "src/local_ai/state.rs",
+            ];
+            let source = sources
+                .iter()
+                .position(|suffix| file.ends_with(suffix))
+                .map_or(0, |i| i + 1);
+            (source, location.line(), location.column())
+        });
+        let _ = writeln!(std::io::stderr().lock(),
+            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column}}}",
+            FAILURE_PHASE.load(Ordering::SeqCst));
+    }));
+}
 
 #[cfg(target_os = "macos")]
 fn prelaunch_parent() {
@@ -378,6 +411,7 @@ async fn launch_environment(executable: &std::path::Path) {
 }
 
 async fn launch_integrity(executable: &std::path::Path) {
+    FAILURE_PHASE.store(3, Ordering::SeqCst);
     let fixture = tempfile::tempdir().unwrap();
     let copied = fixture.path().join("owned-fake");
     std::fs::copy(executable, &copied).unwrap();
@@ -386,15 +420,19 @@ async fn launch_integrity(executable: &std::path::Path) {
     let service = tesina_lib::local_ai::proof_service(copied, model).unwrap();
     let id = uuid::Uuid::new_v4().to_string();
     let request = json!({"requestId":id,"documentRevision":7,"task":"writingCoach","input":{"documentLanguage":"en","passage":{"sourceId":"p","snapshotId":"s","text":"Fixture"}}});
+    FAILURE_PHASE.store(4, Ordering::SeqCst);
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), service.run(request))
         .await
         .unwrap()
         .unwrap();
+    FAILURE_PHASE.store(5, Ordering::SeqCst);
     service.prepare_shutdown().await.unwrap();
+    FAILURE_PHASE.store(6, Ordering::SeqCst);
     assert_eq!(
         result,
         json!({"requestId":id,"documentRevision":7,"task":"writingCoach","status":"ok","output":{"issues":[]}})
     );
+    FAILURE_PHASE.store(7, Ordering::SeqCst);
     assert!(
         fixture.path().join("launch-attempted").exists(),
         "copied fake must attest actual execution"
@@ -411,6 +449,7 @@ async fn launch_integrity(executable: &std::path::Path) {
         if mutation.starts_with("symlink") {
             continue;
         }
+        FAILURE_PHASE.store(8, Ordering::SeqCst);
         let fixture = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         let copied = fixture.path().join("owned-fake");
@@ -442,8 +481,11 @@ async fn launch_integrity(executable: &std::path::Path) {
             }
         }
         let id = uuid::Uuid::new_v4().to_string();
+        FAILURE_PHASE.store(9, Ordering::SeqCst);
         let result = tokio::time::timeout(std::time::Duration::from_secs(5), service.run(json!({"requestId":id,"documentRevision":7,"task":"writingCoach","input":{"documentLanguage":"en","passage":{"sourceId":"p","snapshotId":"s","text":"Fixture"}}}))).await.unwrap().unwrap();
+        FAILURE_PHASE.store(10, Ordering::SeqCst);
         service.prepare_shutdown().await.unwrap();
+        FAILURE_PHASE.store(11, Ordering::SeqCst);
         assert_eq!(
             result,
             json!({"requestId":id,"documentRevision":7,"task":"writingCoach","status":"error","error":"startup-failed"}),
@@ -458,6 +500,7 @@ async fn launch_integrity(executable: &std::path::Path) {
             "tampered artifact executed: {mutation}"
         );
     }
+    FAILURE_PHASE.store(0, Ordering::SeqCst);
 }
 
 async fn crash_and_explicit_retry(executable: PathBuf) {
@@ -829,6 +872,7 @@ async fn read_generation_cancellation(executable: PathBuf) {
 }
 
 fn main() {
+    diagnostic_hook();
     if tesina_lib::local_ai::guardian_entry() {
         return;
     }
@@ -837,11 +881,13 @@ fn main() {
         prelaunch_parent();
         return;
     }
+    FAILURE_PHASE.store(1, Ordering::SeqCst);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
+        FAILURE_PHASE.store(2, Ordering::SeqCst);
         if std::env::args().nth(1).as_deref() == Some("--environment-service") {
             let executable = PathBuf::from(std::env::args_os().nth(2).unwrap());
             let model = PathBuf::from(std::env::args_os().nth(3).unwrap());

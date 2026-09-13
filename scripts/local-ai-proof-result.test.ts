@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  readLocalAiNativeFailure,
   readLocalAiNativeOutput,
   readLocalAiProofResult,
 } from "./run-local-ai-proof.ts";
@@ -19,9 +20,63 @@ const passing = {
   readCancellation: true,
   completionOrdering: true,
   freshGeneration: true,
+  pendingCancelWins: true,
   passed: true,
 };
 describe("local inference native proof result", () => {
+  it("accepts only a closed bounded native panic location and numeric exit", () => {
+    const diagnostic = {
+      proof: "local-ai-native-panic-v1",
+      phase: 6,
+      source: 1,
+      line: 400,
+      column: 5,
+    };
+    expect(readLocalAiNativeFailure(JSON.stringify(diagnostic), 101)).toEqual({
+      exitCode: 101,
+      diagnostic,
+    });
+    for (
+      const changed of [
+        { phase: 12 },
+        { source: 8 },
+        { line: -1 },
+        { column: 0.5 },
+        { payload: "SOURCE_CANARY" },
+        { source: "/private/paper" },
+      ]
+    ) {
+      expect(() =>
+        readLocalAiNativeFailure(
+          JSON.stringify({ ...diagnostic, ...changed }),
+          101,
+        )
+      ).toThrow("local-ai-invalid-failure-record");
+    }
+    for (
+      const stderr of [
+        "",
+        "SOURCE_CANARY",
+        `${JSON.stringify(diagnostic)}\nKEY_CANARY`,
+        "x".repeat(513),
+      ]
+    ) {
+      expect(() => readLocalAiNativeFailure(stderr, 101)).toThrow(
+        "local-ai-invalid-failure-record",
+      );
+    }
+    for (const exitCode of [0, 1.5, NaN, 2 ** 32]) {
+      expect(() =>
+        readLocalAiNativeFailure(JSON.stringify(diagnostic), exitCode)
+      ).toThrow("local-ai-invalid-failure-record");
+    }
+    expect(() =>
+      readLocalAiNativeOutput(
+        "local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending",
+        JSON.stringify(diagnostic),
+      )
+    ).toThrow("local-ai-native-proof-failed");
+  });
   it("requires the structured actual webview outcomes, not only process exit", () => {
     expect(readLocalAiProofResult(JSON.stringify(passing), "")).toEqual(
       passing,
@@ -45,6 +100,8 @@ describe("local inference native proof result", () => {
         { completionOrdering: undefined },
         { freshGeneration: false },
         { freshGeneration: undefined },
+        { pendingCancelWins: false },
+        { pendingCancelWins: undefined },
       ]
     ) {
       expect(() =>

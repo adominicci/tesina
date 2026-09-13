@@ -22,7 +22,7 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
   }
   const result = value as Record<string, unknown>;
   if (
-    Object.keys(result).length !== 15 ||
+    Object.keys(result).length !== 16 ||
     result.proof !== "local-ai-webview-v1" || result.cases !== 12 ||
     result.genericHttpDenied !== true || result.privateFsDenied !== true ||
     result.privateFsWriteDenials !== 2 ||
@@ -32,6 +32,7 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
     result.cancellationTableSaturated !== true ||
     result.readCancellation !== true || result.completionOrdering !== true ||
     result.freshGeneration !== true ||
+    result.pendingCancelWins !== true ||
     result.passed !== true
   ) return fail();
   return {
@@ -49,6 +50,7 @@ export function readLocalAiProofResult(stdout: string, stderr: string) {
     readCancellation: true,
     completionOrdering: true,
     freshGeneration: true,
+    pendingCancelWins: true,
     passed: true,
   };
 }
@@ -85,6 +87,42 @@ export function readLocalAiNativeOutput(stdout: string, stderr: string) {
     ) throw new Error("local-ai-native-proof-failed");
   }
   return lines;
+}
+
+export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
+  const fail = () => {
+    throw new Error("local-ai-invalid-failure-record");
+  };
+  if (
+    stderr.length > 512 || !Number.isInteger(exitCode) || exitCode === 0 ||
+    exitCode < -2147483648 || exitCode > 4294967295
+  ) return fail();
+  let value;
+  try {
+    value = JSON.parse(stderr);
+  } catch {
+    return fail();
+  }
+  if (
+    !value || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).length !== 5 ||
+    value.proof !== "local-ai-native-panic-v1" ||
+    !Number.isInteger(value.phase) || value.phase < 0 || value.phase > 11 ||
+    !Number.isInteger(value.source) || value.source < 0 || value.source > 7 ||
+    ![value.line, value.column].every((n) =>
+      Number.isInteger(n) && n >= 0 && n <= 4294967295
+    )
+  ) return fail();
+  return {
+    exitCode,
+    diagnostic: {
+      proof: "local-ai-native-panic-v1",
+      phase: value.phase,
+      source: value.source,
+      line: value.line,
+      column: value.column,
+    },
+  };
 }
 
 async function capture(
@@ -162,6 +200,19 @@ export async function command(
     }
     if (!result.success) {
       if (build) console.error(stderr);
+      else {
+        let diagnostic = null;
+        try {
+          diagnostic = readLocalAiNativeFailure(stderr, result.code).diagnostic;
+        } catch { /* Unrecognized stderr must never be published. */ }
+        console.error(
+          JSON.stringify({
+            proof: "local-ai-process-failure-v1",
+            exitCode: result.code,
+            diagnostic,
+          }),
+        );
+      }
       throw new Error("local-ai-proof-command-failed");
     }
     return { stdout, stderr, pid: child.pid, startedAt };

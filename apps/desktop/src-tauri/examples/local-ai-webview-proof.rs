@@ -22,13 +22,44 @@ async fn local_inference_proof_coordinate(
 ) -> Result<(), &'static str> {
     let stage = *state.stage.lock().unwrap();
     let expected = [
-        "arm", "admitted", "cleaned", "arm", "admitted", "release", "finished",
+        "arm",
+        "admitted",
+        "cleaned",
+        "arm",
+        "admitted",
+        "release",
+        "finished",
+        "arm-terminal",
+        "terminal-ready",
+        "release-cancelled-terminal",
+        "terminal-cleaned",
     ];
     if expected.get(usize::from(stage)).copied() != Some(action.as_str()) {
         return Err("proof-order");
     }
     let marker = state.root.join("webview-admitted.json");
     match action.as_str() {
+        "arm-terminal" => {
+            if !service.proof_arm_completion() {
+                return Err("proof-terminal-arm");
+            }
+        }
+        "terminal-ready" => {
+            tokio::time::timeout(std::time::Duration::from_secs(5), async {
+                while !service.proof_completion_pending() {
+                    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .map_err(|_| "proof-terminal-ready")?;
+            let pid = service.proof_child_pid().ok_or("proof-terminal-owner")?;
+            *state.previous.lock().unwrap() = Some(serde_json::json!({"pid":pid}));
+        }
+        "release-cancelled-terminal" => {
+            if !service.proof_release_cancelled_completion() {
+                return Err("proof-pending-cancel");
+            }
+        }
         "arm" => {
             if marker.exists() {
                 return Err("proof-stale");
@@ -69,7 +100,7 @@ async fn local_inference_proof_coordinate(
             std::fs::write(state.root.join("webview-release"), b"release")
                 .map_err(|_| "proof-file")?;
         }
-        "cleaned" | "finished" => {
+        "cleaned" | "finished" | "terminal-cleaned" => {
             if !service.shutdown_ready() {
                 return Err("proof-cleanup");
             }
@@ -131,6 +162,7 @@ fn local_inference_proof_report(
     read_cancellation: bool,
     completion_ordering: bool,
     fresh_generation: bool,
+    pending_cancel_wins: bool,
     coordination: tauri::State<'_, Coordination>,
     passed: bool,
 ) {
@@ -149,8 +181,9 @@ fn local_inference_proof_report(
         && read_cancellation
         && completion_ordering
         && fresh_generation
-        && *coordination.stage.lock().unwrap() == 7;
-    println!("{{\"proof\":\"local-ai-webview-v1\",\"cases\":{cases},\"genericHttpDenied\":{denied},\"privateFsDenied\":{private_fs},\"privateFsWriteDenials\":{private_fs_write_denials},\"cspDenied\":{csp},\"trapConnections\":{connections},\"cancellations\":{cancellations},\"nativeEscapeDenied\":{native_escape},\"cancellationTableEntries\":{cancellation_table_entries},\"cancellationTableSaturated\":{cancellation_table_saturated},\"readCancellation\":{read_cancellation},\"completionOrdering\":{completion_ordering},\"freshGeneration\":{fresh_generation},\"passed\":{success}}}");
+        && pending_cancel_wins
+        && *coordination.stage.lock().unwrap() == 11;
+    println!("{{\"proof\":\"local-ai-webview-v1\",\"cases\":{cases},\"genericHttpDenied\":{denied},\"privateFsDenied\":{private_fs},\"privateFsWriteDenials\":{private_fs_write_denials},\"cspDenied\":{csp},\"trapConnections\":{connections},\"cancellations\":{cancellations},\"nativeEscapeDenied\":{native_escape},\"cancellationTableEntries\":{cancellation_table_entries},\"cancellationTableSaturated\":{cancellation_table_saturated},\"readCancellation\":{read_cancellation},\"completionOrdering\":{completion_ordering},\"freshGeneration\":{fresh_generation},\"pendingCancelWins\":{pending_cancel_wins},\"passed\":{success}}}");
     result.store(success, Ordering::SeqCst);
     // Some platform event loops do not propagate AppHandle::exit's code.
     if !success {

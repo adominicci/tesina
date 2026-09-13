@@ -30,6 +30,16 @@ struct Owner {
     shutdown: bool,
     cleanup_failed: bool,
 }
+#[cfg(feature = "local-ai-proof")]
+enum ProofCompletionGate {
+    Disarmed,
+    Armed,
+    Held {
+        request_id: String,
+        release: oneshot::Sender<()>,
+    },
+    Consumed,
+}
 #[derive(Clone)]
 pub struct Service {
     owner: Arc<Mutex<Owner>>,
@@ -40,6 +50,8 @@ pub struct Service {
     pub(super) startup_budget: Duration,
     #[cfg(feature = "local-ai-proof")]
     proof_pid: Arc<std::sync::atomic::AtomicU32>,
+    #[cfg(feature = "local-ai-proof")]
+    proof_completion: Arc<Mutex<ProofCompletionGate>>,
 }
 impl Default for Service {
     fn default() -> Self {
@@ -63,6 +75,8 @@ impl Service {
             startup_budget: Duration::from_secs(30),
             #[cfg(feature = "local-ai-proof")]
             proof_pid: Arc::new(std::sync::atomic::AtomicU32::new(0)),
+            #[cfg(feature = "local-ai-proof")]
+            proof_completion: Arc::new(Mutex::new(ProofCompletionGate::Disarmed)),
         }
     }
     pub fn capability(&self) -> Value {
@@ -188,6 +202,15 @@ impl Service {
             } else {
                 Err(launch_error)
             };
+            // Only a trusted nonshipping proof can arm this single-use barrier.
+            // The real proxy outcome is held before the unchanged owner decision.
+            #[cfg(feature = "local-ai-proof")]
+            let outcome = if outcome.is_ok() && !service.proof_hold_completion(&id, deadline).await
+            {
+                Err(ErrorCode::Timeout)
+            } else {
+                outcome
+            };
             let result = {
                 let mut owner = service.owner.lock().expect("local inference owner");
                 let cancelled = owner
@@ -304,6 +327,72 @@ impl Service {
         self.owner.lock().is_ok_and(|owner| {
             owner.shutdown && owner.active.is_none() && !owner.stopping && !owner.cleanup_failed
         })
+    }
+    #[cfg(feature = "local-ai-proof")]
+    pub fn proof_arm_completion(&self) -> bool {
+        let owner = self.owner.lock().unwrap();
+        let mut gate = self.proof_completion.lock().unwrap();
+        if self.launch.is_none()
+            || owner.active.is_some()
+            || owner.stopping
+            || owner.shutdown
+            || !matches!(*gate, ProofCompletionGate::Disarmed)
+        {
+            return false;
+        }
+        *gate = ProofCompletionGate::Armed;
+        true
+    }
+    #[cfg(feature = "local-ai-proof")]
+    pub fn proof_completion_pending(&self) -> bool {
+        let owner = self.owner.lock().unwrap();
+        let gate = self.proof_completion.lock().unwrap();
+        matches!(&*gate, ProofCompletionGate::Held { request_id, .. }
+            if owner.active.as_ref().is_some_and(|(id, _)| id == request_id))
+    }
+    #[cfg(feature = "local-ai-proof")]
+    pub fn proof_release_cancelled_completion(&self) -> bool {
+        let owner = self.owner.lock().unwrap();
+        let mut gate = self.proof_completion.lock().unwrap();
+        let matching_cancel = matches!(&*gate, ProofCompletionGate::Held { request_id, .. }
+            if owner.active.as_ref().is_some_and(|(id, signal)| id == request_id && *signal.borrow()));
+        if !matching_cancel {
+            return false;
+        }
+        let ProofCompletionGate::Held { release, .. } =
+            std::mem::replace(&mut *gate, ProofCompletionGate::Consumed)
+        else {
+            return false;
+        };
+        release.send(()).is_ok()
+    }
+    #[cfg(feature = "local-ai-proof")]
+    async fn proof_hold_completion(&self, id: &str, deadline: Instant) -> bool {
+        let receiver = {
+            let mut gate = self.proof_completion.lock().unwrap();
+            if matches!(*gate, ProofCompletionGate::Armed) {
+                let (release, receiver) = oneshot::channel();
+                *gate = ProofCompletionGate::Held {
+                    request_id: id.to_owned(),
+                    release,
+                };
+                Some(receiver)
+            } else {
+                None
+            }
+        };
+        let Some(receiver) = receiver else {
+            return true;
+        };
+        // Fixed one-second maximum leaves the owned cleanup budget available.
+        let released = tokio::time::timeout_at(
+            deadline.min(Instant::now() + Duration::from_secs(1)),
+            receiver,
+        )
+        .await
+        .is_ok_and(|result| result.is_ok());
+        *self.proof_completion.lock().unwrap() = ProofCompletionGate::Consumed;
+        released
     }
     #[cfg(feature = "local-ai-proof")]
     pub fn proof_child_pid(&self) -> Option<u32> {

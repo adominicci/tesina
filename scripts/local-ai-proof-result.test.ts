@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   readLocalAiNativeFailure,
   readLocalAiNativeOutput,
+  readLocalAiNativeQuit,
   readLocalAiProofResult,
 } from "./run-local-ai-proof.ts";
 
@@ -25,6 +26,41 @@ const passing = {
   passed: true,
 };
 describe("local inference native proof result", () => {
+  it("requires ordered actual quit readiness before Exit", () => {
+    const record = {
+      proof: "local-ai-native-quit-v1",
+      firstNotReady: true,
+      laterReady: true,
+      readyBeforeExit: true,
+      exitRequestedCount: 2,
+      elapsedMs: 20,
+      fakePid: 123,
+      proofPid: 456,
+      passed: true,
+    };
+    expect(readLocalAiNativeQuit(JSON.stringify(record), "")).toEqual(record);
+    for (
+      const changed of [
+        { firstNotReady: false },
+        { laterReady: false },
+        { readyBeforeExit: false },
+        { exitRequestedCount: 1 },
+        { elapsedMs: 5000 },
+        { passed: false },
+        { extra: true },
+      ]
+    ) {
+      expect(() =>
+        readLocalAiNativeQuit(JSON.stringify({ ...record, ...changed }), "")
+      ).toThrow("local-ai-native-quit-failed");
+    }
+    expect(() => readLocalAiNativeQuit("", "")).toThrow(
+      "local-ai-native-quit-failed",
+    );
+    expect(() => readLocalAiNativeQuit(JSON.stringify(record), "raw")).toThrow(
+      "local-ai-native-quit-failed",
+    );
+  });
   it("accepts only a closed bounded native panic location and numeric exit", () => {
     const diagnostic = {
       proof: "local-ai-native-panic-v1",

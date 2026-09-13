@@ -255,20 +255,20 @@ impl OwnedChild {
             elapsed_ms: 0,
             exit_code: None,
         };
-        let mut duplicate = HANDLE::default();
-        let duplicated = unsafe {
-            DuplicateHandle(
+        let duplicate = unsafe {
+            let mut raw = HANDLE::default();
+            let duplicated = DuplicateHandle(
                 GetCurrentProcess(),
                 self.process.0,
                 GetCurrentProcess(),
-                &mut duplicate,
+                &mut raw,
                 0,
                 false,
                 DUPLICATE_SAME_ACCESS,
-            )
+            );
+            duplicated.ok().map(|_| Handle(raw))
         };
-        if duplicated.is_ok() {
-            let duplicate = Handle(duplicate);
+        if let Some(duplicate) = duplicate {
             let waited = tokio::task::spawn_blocking(move || {
                 let duplicate = duplicate; // Move the Send owner, not a captured raw HANDLE field.
                 let started = std::time::Instant::now();

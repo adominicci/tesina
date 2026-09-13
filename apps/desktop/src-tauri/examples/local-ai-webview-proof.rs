@@ -203,6 +203,96 @@ fn local_inference_proof_report(
     }
     app.exit(if success { 0 } else { 1 });
 }
+fn native_quit(executable: PathBuf) {
+    use std::io::Read;
+    use std::time::{Duration, Instant};
+    #[derive(Default)]
+    struct Observation {
+        start: Option<Instant>,
+        fake: u32,
+        count: u8,
+        first: bool,
+        later: bool,
+        passed: bool,
+    }
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().to_owned();
+    let model = root.join("success.gguf");
+    std::fs::write(&model, b"synthetic proof fixture").unwrap();
+    std::fs::write(root.join("webview-hold"), b"hold").unwrap();
+    let service = tesina_lib::local_ai::proof_service(executable, model).unwrap();
+    let observation = Arc::new(std::sync::Mutex::new(Observation::default()));
+    let setup_observation = observation.clone();
+    let finished_observation = observation.clone();
+    let setup_service = service.clone();
+    let mut context = tesina_lib::local_ai_proof_context();
+    context.config_mut().build.dev_url = None;
+    context.config_mut().app.windows[0].visible = false;
+    context.set_assets(Box::new(ProofAssets {
+        script: vec![],
+        html: b"<!doctype html><title>Native quit proof</title>".to_vec(),
+    }));
+    tauri::Builder::default().manage(service.clone()).setup(move |app| {
+        let app = app.handle().clone();
+        let watchdog = app.clone();
+        std::thread::spawn(move || { std::thread::sleep(Duration::from_secs(12)); watchdog.exit(2); std::process::exit(2); });
+        tauri::async_runtime::spawn(async move {
+            let run_service = setup_service.clone();
+            let run = tokio::spawn(async move {
+                run_service.run(serde_json::json!({"requestId":uuid::Uuid::new_v4().to_string(),"documentRevision":7,"task":"writingCoach","input":{"documentLanguage":"en","passage":{"sourceId":"p","snapshotId":"s","text":"Fixture"}}})).await
+            });
+            let admitted = tokio::time::timeout(Duration::from_secs(5), async {
+                loop {
+                    if let Ok(file) = std::fs::File::open(root.join("webview-admitted.json")) {
+                        let mut bytes = vec![];
+                        if file.take(257).read_to_end(&mut bytes).is_ok() && bytes.len() <= 256 {
+                            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                                if value["pid"].as_u64() == setup_service.proof_child_pid().map(u64::from)
+                                    && value["keyDigest"].as_str().is_some_and(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())) {
+                                    break setup_service.proof_child_pid().unwrap();
+                                }
+                            }
+                        }
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            }).await;
+            if let Ok(pid) = admitted {
+                if !run.is_finished() && !setup_service.shutdown_ready() && setup_service.capability()["status"] == "busy" {
+                    let mut value = setup_observation.lock().unwrap();
+                    value.fake = pid;
+                    value.start = Some(Instant::now());
+                }
+            }
+            app.exit(0);
+        });
+        Ok(())
+    }).build(context).unwrap().run(move |_app, event| {
+        let ready = service.shutdown_ready();
+        match &event {
+            tauri::RunEvent::ExitRequested { .. } => {
+                let mut value = observation.lock().unwrap();
+                value.count = value.count.saturating_add(1);
+                if value.count == 1 { value.first = value.start.is_some() && !ready; }
+                else if value.first && ready { value.later = true; }
+            }
+            tauri::RunEvent::Exit => {
+                let mut value = observation.lock().unwrap();
+                let elapsed = value.start.map_or(5000, |start| start.elapsed().as_millis());
+                value.passed = value.first && value.later && ready && value.count <= 8 && elapsed < 5000;
+                println!("{{\"proof\":\"local-ai-native-quit-v1\",\"firstNotReady\":{},\"laterReady\":{},\"readyBeforeExit\":{ready},\"exitRequestedCount\":{},\"elapsedMs\":{elapsed},\"fakePid\":{},\"proofPid\":{},\"passed\":{}}}",value.first,value.later,value.count,value.fake,std::process::id(),value.passed);
+            }
+            _ => {}
+        }
+        tesina_lib::proof_handle_inference_exit(_app, &event);
+    });
+    std::process::exit(if finished_observation.lock().unwrap().passed {
+        0
+    } else {
+        1
+    });
+}
+
 fn main() {
     use tesina_lib::local_ai::*;
     use tesina_lib::reference_fetch::*;
@@ -210,6 +300,10 @@ fn main() {
         return;
     }
     let executable = PathBuf::from(std::env::args_os().nth(1).expect("fixed fake required"));
+    if std::env::args().nth(3).as_deref() == Some("--native-quit") {
+        native_quit(executable);
+        return;
+    }
     let script =
         std::fs::read(std::env::args_os().nth(2).expect("built proof JS required")).unwrap();
     let temp = tempfile::tempdir().unwrap();

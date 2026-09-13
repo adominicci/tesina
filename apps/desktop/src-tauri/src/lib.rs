@@ -149,22 +149,7 @@ fn run_application() {
         .build(application_context())
         .expect("error while building tauri application")
         .run(|_app, _event| {
-            if let tauri::RunEvent::ExitRequested { api, code, .. } = &_event {
-                let service = _app.state::<local_ai::Service>();
-                if !service.shutdown_ready() {
-                    api.prevent_exit();
-                    let service = service.inner().clone();
-                    let app = _app.clone();
-                    let code = code.unwrap_or(0);
-                    tauri::async_runtime::spawn(async move {
-                        if service.prepare_shutdown().await.is_ok() {
-                            app.exit(code);
-                        } else {
-                            let _ = service.resume();
-                        }
-                    });
-                }
-            }
+            handle_inference_exit(_app, &_event);
             // The macOS close button hides the main window instead of
             // destroying it, so the app stays in the Dock with no window on
             // screen. Clicking the Dock icon has to bring it back.
@@ -180,6 +165,30 @@ fn run_application() {
                 }
             }
         });
+}
+
+fn handle_inference_exit(app: &tauri::AppHandle, event: &tauri::RunEvent) {
+    if let tauri::RunEvent::ExitRequested { api, code, .. } = event {
+        let service = app.state::<local_ai::Service>();
+        if !service.shutdown_ready() {
+            api.prevent_exit();
+            let service = service.inner().clone();
+            let app = app.clone();
+            let code = code.unwrap_or(0);
+            tauri::async_runtime::spawn(async move {
+                if service.prepare_shutdown().await.is_ok() {
+                    app.exit(code);
+                } else {
+                    let _ = service.resume();
+                }
+            });
+        }
+    }
+}
+
+#[cfg(feature = "local-ai-proof")]
+pub fn proof_handle_inference_exit(app: &tauri::AppHandle, event: &tauri::RunEvent) {
+    handle_inference_exit(app, event);
 }
 
 #[cfg(all(test, not(feature = "packaged-backup-smoke")))]

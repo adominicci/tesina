@@ -91,6 +91,44 @@ export function readLocalAiNativeOutput(stdout: string, stderr: string) {
   return lines;
 }
 
+export function readLocalAiNativeQuit(stdout: string, stderr: string) {
+  const fail = () => {
+    throw new Error("local-ai-native-quit-failed");
+  };
+  if (stderr || stdout.length > 512) return fail();
+  let value;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    return fail();
+  }
+  if (
+    !value || typeof value !== "object" || Array.isArray(value) ||
+    Object.keys(value).length !== 9 ||
+    value.proof !== "local-ai-native-quit-v1" ||
+    value.firstNotReady !== true || value.laterReady !== true ||
+    value.readyBeforeExit !== true ||
+    value.passed !== true || !Number.isInteger(value.exitRequestedCount) ||
+    value.exitRequestedCount < 2 || value.exitRequestedCount > 8 ||
+    !Number.isInteger(value.elapsedMs) || value.elapsedMs < 0 ||
+    value.elapsedMs >= 5000 ||
+    ![value.fakePid, value.proofPid].every((n) =>
+      Number.isInteger(n) && n > 1 && n <= 4294967295
+    )
+  ) return fail();
+  return {
+    proof: "local-ai-native-quit-v1",
+    firstNotReady: true,
+    laterReady: true,
+    readyBeforeExit: true,
+    exitRequestedCount: value.exitRequestedCount,
+    elapsedMs: value.elapsedMs,
+    fakePid: value.fakePid,
+    proofPid: value.proofPid,
+    passed: true,
+  };
+}
+
 export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
   const fail = () => {
     throw new Error("local-ai-invalid-failure-record");
@@ -335,6 +373,16 @@ async function main() {
     );
     const webview = await command(host, [fake, script], native, 70_000);
     const result = readLocalAiProofResult(webview.stdout, webview.stderr);
+    const quit = await command(
+      host,
+      [fake, script, "--native-quit"],
+      native,
+      20_000,
+    );
+    const nativeQuit = readLocalAiNativeQuit(quit.stdout, quit.stderr);
+    if (nativeQuit.proofPid !== quit.pid) {
+      throw new Error("local-ai-native-quit-owner");
+    }
     console.log(JSON.stringify({
       ...result,
       fixtureVersion: 1,
@@ -348,6 +396,7 @@ async function main() {
       fakeSha256: await digest(fake),
       scriptSha256: await digest(script),
       nativeProcessOutput,
+      nativeQuit,
       excludedClaims: [
         "complete E1-E8 acceptance",
         "real model/runtime",

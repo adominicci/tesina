@@ -424,7 +424,23 @@ fn main() {
         println!("SOURCE_CANARY GENERATED_CANARY {key}");
         eprintln!("/private/PAPER_CANARY /private/MODEL_CANARY");
     }
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0");
+    if scenario == "launch-integrity" {
+        let status = if listener.is_ok() { 1 } else { 2 };
+        let code = listener
+            .as_ref()
+            .err()
+            .and_then(std::io::Error::raw_os_error);
+        let mut record = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(fixture.join("launch-bind.json"))
+            .unwrap();
+        record
+            .write_all(json!({"status":status,"code":code}).to_string().as_bytes())
+            .unwrap();
+    }
+    let listener = listener.unwrap();
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
             break;

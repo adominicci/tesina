@@ -1,7 +1,7 @@
 //! Process/socket proof only. This is not platform-webview acceptance.
 use serde_json::json;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, Ordering};
 
 // Nonshipping diagnostics: fixed IDs only, never panic payloads or paths.
 static FAILURE_PHASE: AtomicU8 = AtomicU8::new(0);
@@ -9,6 +9,50 @@ static FAILURE_REPORTED: AtomicBool = AtomicBool::new(false);
 static FAILURE_RESULT: AtomicU8 = AtomicU8::new(0);
 static CHILD_STARTED: AtomicBool = AtomicBool::new(false);
 static FIXTURE_MARKER: AtomicBool = AtomicBool::new(false);
+static FAKE_BIND: AtomicU8 = AtomicU8::new(0);
+static FAKE_BIND_CODE: AtomicI32 = AtomicI32::new(0);
+static FAKE_BIND_HAS_CODE: AtomicBool = AtomicBool::new(false);
+
+fn capture_fake_bind(fixture: &std::path::Path) {
+    use std::io::Read;
+    let file = match std::fs::File::open(fixture.join("launch-bind.json")) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return,
+        Err(_) => {
+            FAKE_BIND.store(3, Ordering::SeqCst);
+            return;
+        }
+    };
+    let mut bytes = Vec::new();
+    let valid = (|| {
+        file.take(129).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 128 {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        if value.as_object()?.len() != 2 {
+            return None;
+        }
+        let status = value.get("status")?.as_u64()?;
+        let code = value.get("code")?;
+        let code = if code.is_null() {
+            None
+        } else {
+            Some(i32::try_from(code.as_i64()?).ok()?)
+        };
+        if !matches!(status, 1 | 2) || (status == 1 && code.is_some()) {
+            return None;
+        }
+        Some((status as u8, code))
+    })();
+    let Some((status, code)) = valid else {
+        FAKE_BIND.store(3, Ordering::SeqCst);
+        return;
+    };
+    FAKE_BIND_CODE.store(code.unwrap_or(0), Ordering::SeqCst);
+    FAKE_BIND_HAS_CODE.store(code.is_some(), Ordering::SeqCst);
+    FAKE_BIND.store(status, Ordering::SeqCst);
+}
 fn diagnostic_hook() {
     std::panic::set_hook(Box::new(|info| {
         use std::io::Write;
@@ -41,10 +85,15 @@ fn diagnostic_hook() {
             };
         #[cfg(not(windows))]
         let (windows_stage, windows_code) = (0, 0);
+        let bind_code = if FAKE_BIND_HAS_CODE.load(Ordering::SeqCst) {
+            FAKE_BIND_CODE.load(Ordering::SeqCst).to_string()
+        } else {
+            "null".to_owned()
+        };
         let _ = writeln!(std::io::stderr().lock(),
-            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column},\"result\":{},\"childStarted\":{},\"fixtureMarker\":{},\"windowsStage\":{windows_stage},\"windowsCode\":{windows_code}}}",
+            "{{\"proof\":\"local-ai-native-panic-v1\",\"phase\":{},\"source\":{source},\"line\":{line},\"column\":{column},\"result\":{},\"childStarted\":{},\"fixtureMarker\":{},\"windowsStage\":{windows_stage},\"windowsCode\":{windows_code},\"fakeBind\":{},\"fakeBindCode\":{bind_code}}}",
             FAILURE_PHASE.load(Ordering::SeqCst), FAILURE_RESULT.load(Ordering::SeqCst),
-            CHILD_STARTED.load(Ordering::SeqCst), FIXTURE_MARKER.load(Ordering::SeqCst));
+            CHILD_STARTED.load(Ordering::SeqCst), FIXTURE_MARKER.load(Ordering::SeqCst), FAKE_BIND.load(Ordering::SeqCst));
     }));
 }
 
@@ -468,6 +517,7 @@ async fn launch_integrity(executable: &std::path::Path) {
         Ordering::SeqCst,
     );
     FAILURE_PHASE.store(5, Ordering::SeqCst);
+    capture_fake_bind(fixture.path());
     service.prepare_shutdown().await.unwrap();
     FAILURE_PHASE.store(6, Ordering::SeqCst);
     assert_eq!(
@@ -479,6 +529,13 @@ async fn launch_integrity(executable: &std::path::Path) {
         fixture.path().join("launch-attempted").exists(),
         "copied fake must attest actual execution"
     );
+    assert_eq!(
+        FAKE_BIND.load(Ordering::SeqCst),
+        1,
+        "fixed fake bind witness required"
+    );
+    FAKE_BIND.store(0, Ordering::SeqCst);
+    FAKE_BIND_HAS_CODE.store(false, Ordering::SeqCst);
     FAILURE_RESULT.store(0, Ordering::SeqCst);
     CHILD_STARTED.store(false, Ordering::SeqCst);
     FIXTURE_MARKER.store(false, Ordering::SeqCst);

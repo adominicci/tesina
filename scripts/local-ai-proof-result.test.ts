@@ -36,6 +36,8 @@ describe("local inference native proof result", () => {
       fixtureMarker: false,
       windowsStage: 10,
       windowsCode: -2147024894,
+      fakeBind: 2,
+      fakeBindCode: 10022,
     };
     expect(readLocalAiNativeFailure(JSON.stringify(diagnostic), 101)).toEqual({
       exitCode: 101,
@@ -54,6 +56,9 @@ describe("local inference native proof result", () => {
         { fixtureMarker: "false" },
         { windowsStage: 12 },
         { windowsCode: 2147483648 },
+        { fakeBind: 4 },
+        { fakeBindCode: "RAW_ERROR" },
+        { fakeBindCode: 2147483648 },
       ]
     ) {
       expect(() =>
@@ -63,6 +68,12 @@ describe("local inference native proof result", () => {
         )
       ).toThrow("local-ai-invalid-failure-record");
     }
+    expect(
+      readLocalAiNativeFailure(
+        JSON.stringify({ ...diagnostic, fakeBind: 0, fakeBindCode: null }),
+        101,
+      ).diagnostic.fakeBindCode,
+    ).toBeNull();
     for (
       const stderr of [
         "",

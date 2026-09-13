@@ -105,7 +105,7 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
   }
   if (
     !value || typeof value !== "object" || Array.isArray(value) ||
-    Object.keys(value).length !== 10 ||
+    Object.keys(value).length !== 12 ||
     value.proof !== "local-ai-native-panic-v1" ||
     !Number.isInteger(value.phase) || value.phase < 0 || value.phase > 11 ||
     !Number.isInteger(value.source) || value.source < 0 || value.source > 7 ||
@@ -116,6 +116,13 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
     value.windowsStage > 11 ||
     !Number.isInteger(value.windowsCode) || value.windowsCode < -2147483648 ||
     value.windowsCode > 2147483647 ||
+    !Number.isInteger(value.fakeBind) || value.fakeBind < 0 ||
+    value.fakeBind > 3 ||
+    !(value.fakeBindCode === null ||
+      (Number.isInteger(value.fakeBindCode) &&
+        value.fakeBindCode >= -2147483648 &&
+        value.fakeBindCode <= 2147483647)) ||
+    (value.fakeBind !== 2 && value.fakeBindCode !== null) ||
     ![value.line, value.column].every((n) =>
       Number.isInteger(n) && n >= 0 && n <= 4294967295
     )
@@ -133,6 +140,8 @@ export function readLocalAiNativeFailure(stderr: string, exitCode: number) {
       fixtureMarker: value.fixtureMarker,
       windowsStage: value.windowsStage,
       windowsCode: value.windowsCode,
+      fakeBind: value.fakeBind,
+      fakeBindCode: value.fakeBindCode,
     },
   };
 }

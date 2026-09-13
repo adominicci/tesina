@@ -13,7 +13,7 @@ describe("bundled release notes", () => {
   question-led writing feedback without changing the paper automatically or
   acting as APA authority.`;
 
-    expect(bundledReleaseNotes.version).toBe("0.1.23");
+    expect(bundledReleaseNotes.version).toBe("0.1.24");
     expect(bundledReleaseNotes.version).toBe(desktopPackage.version);
     expect(bundledReleaseNotes.body).toBe(expectedNotes);
     expect(bundledReleaseNotes.body).not.toContain("## [0.1.2]");

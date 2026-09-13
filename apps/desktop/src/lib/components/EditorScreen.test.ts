@@ -636,6 +636,7 @@ describe("Write and Study workspace modes", () => {
   });
 
   it("keeps coach review out of persistence, storage, network, APA, schema, history, and export bytes", async () => {
+    setLocale("es", { reload: false });
     const essay = exportableEssay(bodyDoc(
       "It is important to note that the policy changed in many ways during review.",
     ));
@@ -694,7 +695,11 @@ describe("Write and Study workspace modes", () => {
     clickCoach(m.writing_coach_next());
     clickCoach(m.writing_coach_previous());
     clickCoach(m.writing_coach_edit_passage());
-    await tick();
+    await vi.waitFor(() =>
+      expect(document.querySelector(".writing-coach-source-emphasis"))
+        .not.toBeNull()
+    );
+    flushSync();
     clickCoach(m.writing_coach_mode_study());
     await drainMicrotasks();
     flushSync();

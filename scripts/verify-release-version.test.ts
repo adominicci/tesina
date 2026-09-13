@@ -158,7 +158,7 @@ describe("verifyReleaseVersion", () => {
     }
   });
 
-  it("matches the real 0.1.23 metadata, README, links, and bundled Markdown", async () => {
+  it("matches the real 0.1.24 metadata, README, links, and bundled Markdown", async () => {
     const root = new URL("../", import.meta.url);
     const [
       tauriConfig,
@@ -183,7 +183,7 @@ describe("verifyReleaseVersion", () => {
     ]);
 
     const verified = verifyReleaseVersion({
-      tag: "v0.1.23",
+      tag: "v0.1.24",
       tauriConfig,
       packageJson,
       cargoToml,
@@ -193,13 +193,16 @@ describe("verifyReleaseVersion", () => {
 
     expect(verified.version).toBe(bundledReleaseNotes.version);
     expect(verified.notes).toBe(bundledReleaseNotes.body);
-    expect(readme).toContain("Version 0.1.23 supports");
+    expect(readme).toContain("Version 0.1.24 supports");
     expect(readme).toContain(
       "deterministic English and Spanish writing feedback",
     );
     expect(readme).toMatch(/never\s+rewrites\s+the paper automatically/);
     expect(changelog).toContain(
-      "[Unreleased]: https://github.com/adominicci/tesina/compare/v0.1.23...HEAD",
+      "[Unreleased]: https://github.com/adominicci/tesina/compare/v0.1.24...HEAD",
+    );
+    expect(changelog).toContain(
+      "[0.1.24]: https://github.com/adominicci/tesina/compare/v0.1.23...v0.1.24",
     );
     expect(changelog).toContain(
       "[0.1.23]: https://github.com/adominicci/tesina/compare/v0.1.22...v0.1.23",

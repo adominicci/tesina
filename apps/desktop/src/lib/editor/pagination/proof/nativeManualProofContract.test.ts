@@ -33,6 +33,24 @@ const cargoManifest = await readFile(
 );
 
 describe("visible native manual-proof contract", () => {
+  it("waits for native selection collapse before the separate paste chord", () => {
+    expect(source).toContain(
+      'editor.on("selectionUpdate", inspectDrivenCollapse)',
+    );
+    expect(source).toContain("selection.from !== evidence.selectionTo");
+    expect(source).toContain(
+      "JSON.stringify(editor.getJSON()) !== copiedDocumentJson",
+    );
+    expect(source).toContain('stage: "collapsed"');
+    const pasteSender = nativeInputDriver.slice(
+      nativeInputDriver.indexOf("fn send_paste("),
+      nativeInputDriver.indexOf("fn activate_composition_layout("),
+    );
+    expect(pasteSender).not.toContain("VK_RIGHT");
+    expect(pasteSender).toContain("VK_V");
+    expect(source).toContain("Native input acknowledgement failed:");
+  });
+
   it("keeps serde JSON values and macros in the Windows host module scope", () => {
     const windowsHostModule = nativeHost.slice(
       nativeHost.indexOf("mod windows_host {"),

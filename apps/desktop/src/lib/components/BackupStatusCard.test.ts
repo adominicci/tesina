@@ -32,7 +32,7 @@ function fakeSettings(
 } {
   return {
     backup,
-    updateBackup: vi.fn(),
+    updateBackup: vi.fn<BackupSettingsFacade["updateBackup"]>(),
     flushPending: () => Promise.resolve(),
   };
 }

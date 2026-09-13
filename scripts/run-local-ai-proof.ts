@@ -101,13 +101,19 @@ export function readLocalAiWebviewCapture(stdout: string, stderr: string) {
   }
 }
 
-export function readLocalAiNativeOutput(stdout: string, stderr: string) {
+export function readLocalAiNativeOutput(
+  stdout: string,
+  stderr: string,
+  platform = "darwin",
+) {
   const lines = stdout.trim().split("\n");
   const marker =
     "local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending";
   if (
     stderr || stdout.length > 64 * 1024 || lines.at(-1) !== marker ||
-    ![1, 3].includes(lines.length)
+    ![1, 3].includes(lines.length) ||
+    !["darwin", "windows"].includes(platform) ||
+    (platform === "windows" && lines.length !== 3)
   ) throw new Error("local-ai-native-proof-failed");
   for (const [index, line] of lines.slice(0, -1).entries()) {
     let value;
@@ -115,6 +121,43 @@ export function readLocalAiNativeOutput(stdout: string, stderr: string) {
       value = JSON.parse(line);
     } catch {
       throw new Error("local-ai-native-proof-failed");
+    }
+    if (platform === "windows") {
+      if (
+        !value || typeof value !== "object" || Array.isArray(value) ||
+        Object.keys(value).length !== 18 ||
+        value.proof !== "windows-parent-death-v1" ||
+        value.phase !== ["loading", "read-generation"][index] ||
+        ![
+          "parentSignalled",
+          "fakeSignalled",
+          "sentinelAlive",
+          "sentinelResponsive",
+          "sentinelReleased",
+          "passed",
+        ].every((key) => value[key] === true) || value.waitError !== false ||
+        ![
+          value.parentPid,
+          value.sentinelPid,
+          value.fakePid,
+          value.startedUnixMs,
+        ].every((n) => Number.isSafeInteger(n) && n > 1) ||
+        ![value.parentPid, value.sentinelPid, value.fakePid].every((n) =>
+          n <= 4294967295
+        ) ||
+        new Set([value.parentPid, value.sentinelPid, value.fakePid]).size !==
+          3 ||
+        ![
+          value.creationHigh,
+          value.creationLow,
+          value.parentExit,
+          value.fakeExit,
+        ].every((n) => Number.isInteger(n) && n >= 0 && n <= 4294967295) ||
+        (value.creationHigh === 0 && value.creationLow === 0) ||
+        !Number.isInteger(value.elapsedMs) || value.elapsedMs < 0 ||
+        value.elapsedMs >= 5000
+      ) throw new Error("local-ai-native-proof-failed");
+      continue;
     }
     if (
       !value || typeof value !== "object" || Array.isArray(value) ||
@@ -414,7 +457,17 @@ async function main() {
     const nativeProcessOutput = readLocalAiNativeOutput(
       processResult.stdout,
       processResult.stderr,
+      Deno.build.os,
     );
+    if (Deno.build.os === "windows") {
+      // Publish only parsed, fully validated closed phase records before later UI proof.
+      console.log(JSON.stringify({
+        proof: "windows-parent-death-checkpoint-v1",
+        phases: nativeProcessOutput.slice(0, -1).map((line) =>
+          JSON.parse(line)
+        ),
+      }));
+    }
     const webview = await command(host, [fake, script], native, 70_000);
     const result = readLocalAiWebviewCapture(webview.stdout, webview.stderr);
     const quit = await command(

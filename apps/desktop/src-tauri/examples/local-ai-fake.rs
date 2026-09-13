@@ -5,6 +5,31 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
+#[cfg(windows)]
+fn windows_death_phase(fixture: &std::path::Path, phase: &str) {
+    use windows::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetProcessTimes},
+    };
+    let (mut creation, mut exit, mut kernel, mut user) = (
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+        FILETIME::default(),
+    );
+    unsafe {
+        GetProcessTimes(
+            GetCurrentProcess(),
+            &mut creation,
+            &mut exit,
+            &mut kernel,
+            &mut user,
+        )
+        .unwrap();
+    }
+    std::fs::write(fixture.join("death-phase.json"), json!({"phase":phase,"pid":std::process::id(),"creationHigh":creation.dwHighDateTime,"creationLow":creation.dwLowDateTime}).to_string()).unwrap();
+}
+
 fn respond(mut stream: TcpStream, key: &str, scenario: &str, fixture: &std::path::Path) {
     stream
         .set_read_timeout(Some(Duration::from_secs(2)))
@@ -47,6 +72,8 @@ fn respond(mut stream: TcpStream, key: &str, scenario: &str, fixture: &std::path
         return;
     }
     let (status, output) = if scenario == "loading" && path == "/health" {
+        #[cfg(windows)]
+        windows_death_phase(fixture, "loading");
         #[cfg(target_os = "macos")]
         std::fs::write(
             fixture.join("death-phase.json"),
@@ -102,6 +129,8 @@ fn respond(mut stream: TcpStream, key: &str, scenario: &str, fixture: &std::path
             std::fs::write(fixture.join("completion-admitted.json"), json!({"pid":std::process::id(),"keyDigest":format!("{:x}",Sha256::digest(key.as_bytes())),"outputAttempted":true}).to_string()).unwrap();
             #[cfg(target_os = "macos")]
             std::fs::write(fixture.join("death-phase.json"), json!({"phase":"read-generation","pid":std::process::id(),"guardian":unsafe {libc::getppid()}}).to_string()).unwrap();
+            #[cfg(windows)]
+            windows_death_phase(fixture, "read-generation");
             let until = std::time::Instant::now() + Duration::from_secs(10);
             while !fixture.join("release-completion").exists() && std::time::Instant::now() < until
             {

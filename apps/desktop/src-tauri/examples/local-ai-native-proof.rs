@@ -847,6 +847,279 @@ async fn parent_death_phases(executable: &std::path::Path) {
     }
 }
 
+#[cfg(windows)]
+mod windows_death {
+    use super::*;
+    use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+    use std::process::{Child, Command, Stdio};
+    use std::time::{Duration, Instant};
+    use windows::core::PWSTR;
+    use windows::Win32::{Foundation::*, System::Threading::*};
+
+    struct Parent {
+        child: Child,
+        release: Option<PathBuf>,
+    }
+    impl Parent {
+        fn handle(&self) -> HANDLE {
+            HANDLE(self.child.as_raw_handle())
+        }
+        fn live(&self) -> bool {
+            unsafe { WaitForSingleObject(self.handle(), 0) == WAIT_TIMEOUT }
+        }
+    }
+    impl Drop for Parent {
+        fn drop(&mut self) {
+            if let Some(path) = &self.release {
+                let _ = std::fs::write(path, b"release");
+                unsafe {
+                    WaitForSingleObject(self.handle(), 1000);
+                }
+            }
+            if self.live() {
+                let _ = self.child.kill();
+            }
+            unsafe {
+                WaitForSingleObject(self.handle(), 1000);
+            }
+            let _ = self.child.try_wait();
+        }
+    }
+    struct Fake(OwnedHandle);
+    impl Fake {
+        fn handle(&self) -> HANDLE {
+            HANDLE(self.0.as_raw_handle())
+        }
+    }
+    impl Drop for Fake {
+        fn drop(&mut self) {
+            unsafe {
+                if WaitForSingleObject(self.handle(), 0) == WAIT_TIMEOUT {
+                    let _ = TerminateProcess(self.handle(), 1);
+                    WaitForSingleObject(self.handle(), 1000);
+                }
+            }
+        }
+    }
+    fn bounded_value(path: &std::path::Path) -> Option<serde_json::Value> {
+        use std::io::Read;
+        let file = std::fs::File::open(path).ok()?;
+        let mut bytes = vec![];
+        file.take(513).read_to_end(&mut bytes).ok()?;
+        if bytes.len() > 512 {
+            return None;
+        }
+        serde_json::from_slice(&bytes).ok()
+    }
+    fn fixed_file(path: &std::path::Path, expected: &[u8]) -> bool {
+        use std::io::Read;
+        let Ok(file) = std::fs::File::open(path) else {
+            return false;
+        };
+        let mut bytes = vec![];
+        file.take(expected.len() as u64 + 1)
+            .read_to_end(&mut bytes)
+            .is_ok()
+            && bytes == expected
+    }
+    fn creation(handle: HANDLE) -> FILETIME {
+        let (mut creation, mut exit, mut kernel, mut user) = (
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+            FILETIME::default(),
+        );
+        unsafe {
+            GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user).unwrap();
+        }
+        creation
+    }
+    fn exit_code(handle: HANDLE) -> Option<u32> {
+        let mut code = 0;
+        unsafe { GetExitCodeProcess(handle, &mut code).ok().map(|_| code) }
+    }
+    pub fn sentinel(root: PathBuf) {
+        std::fs::write(root.join("sentinel-ready"), b"ready").unwrap();
+        let until = Instant::now() + Duration::from_secs(30);
+        while Instant::now() < until {
+            if root.join("sentinel-release").exists() {
+                return;
+            }
+            if root.join("sentinel-ping").exists() {
+                std::fs::write(root.join("sentinel-pong"), b"alive").unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+    pub fn run(executable: &std::path::Path) {
+        for scenario in ["loading", "read-generation"] {
+            let fixture = tempfile::tempdir().unwrap();
+            let root = fixture.path();
+            let model = root.join(format!("{scenario}.gguf"));
+            std::fs::write(&model, b"synthetic fixture, not model weights").unwrap();
+            let proof = std::env::current_exe().unwrap();
+            let cwd = std::env::current_dir().unwrap();
+            let started_unix_ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_millis();
+            let mut parent = Parent {
+                child: Command::new(&proof)
+                    .args([
+                        std::ffi::OsStr::new("--owned-service"),
+                        executable.as_os_str(),
+                        model.as_os_str(),
+                    ])
+                    .current_dir(&cwd)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+                release: None,
+            };
+            let mut sentinel = Parent {
+                child: Command::new(&proof)
+                    .arg("--sentinel")
+                    .arg(root)
+                    .current_dir(&cwd)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap(),
+                release: Some(root.join("sentinel-release")),
+            };
+            let until = Instant::now() + Duration::from_secs(5);
+            let phase = loop {
+                assert!(
+                    Instant::now() < until,
+                    "owned phase acknowledgement deadline"
+                );
+                assert!(
+                    parent.live() && sentinel.live(),
+                    "owned process ended before phase"
+                );
+                if fixed_file(&root.join("sentinel-ready"), b"ready") {
+                    if let Some(value) = bounded_value(&root.join("death-phase.json")) {
+                        break value;
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(phase.as_object().is_some_and(|v| v.len() == 4));
+            assert_eq!(phase["phase"], scenario);
+            let pid = u32::try_from(phase["pid"].as_u64().unwrap()).unwrap();
+            assert!(pid > 1 && pid != parent.child.id() && pid != sentinel.child.id());
+            // Acquire once BEFORE the trigger; all later waits/cleanup use this handle.
+            let raw = unsafe {
+                OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE | PROCESS_TERMINATE,
+                    false,
+                    pid,
+                )
+                .unwrap()
+            };
+            let owned = unsafe { OwnedHandle::from_raw_handle(raw.0) };
+            let handle = HANDLE(owned.as_raw_handle());
+            assert_eq!(unsafe { GetProcessId(handle) }, pid);
+            assert_eq!(unsafe { WaitForSingleObject(handle, 0) }, WAIT_TIMEOUT);
+            let created = creation(handle);
+            assert_eq!(
+                phase["creationHigh"].as_u64(),
+                Some(u64::from(created.dwHighDateTime))
+            );
+            assert_eq!(
+                phase["creationLow"].as_u64(),
+                Some(u64::from(created.dwLowDateTime))
+            );
+            let mut image = vec![0u16; 32768];
+            let mut length = image.len() as u32;
+            unsafe {
+                QueryFullProcessImageNameW(
+                    handle,
+                    PROCESS_NAME_WIN32,
+                    PWSTR(image.as_mut_ptr()),
+                    &mut length,
+                )
+                .unwrap();
+            }
+            assert!(length > 0 && (length as usize) < image.len());
+            let image = PathBuf::from(String::from_utf16(&image[..length as usize]).unwrap());
+            assert!(
+                image.canonicalize().unwrap() == executable.canonicalize().unwrap(),
+                "unexpected owned fake image"
+            );
+            let fake = Fake(owned); // Termination authority begins only after identity validation.
+            assert!(parent.live() && sentinel.live());
+            assert_eq!(
+                unsafe { WaitForSingleObject(fake.handle(), 0) },
+                WAIT_TIMEOUT,
+                "owned fake exited before forced parent death"
+            );
+            let started = Instant::now();
+            parent.child.kill().unwrap(); // Intentional forced application-parent death, no Service cleanup.
+            let remaining = Duration::from_secs(5)
+                .saturating_sub(started.elapsed())
+                .as_millis() as u32;
+            let waited = unsafe {
+                WaitForMultipleObjects(&[parent.handle(), fake.handle()], true, remaining)
+            };
+            let parent_state = unsafe { WaitForSingleObject(parent.handle(), 0) };
+            let fake_state = unsafe { WaitForSingleObject(fake.handle(), 0) };
+            let elapsed_ms = started.elapsed().as_millis();
+            let parent_signalled = parent_state == WAIT_OBJECT_0;
+            let fake_signalled = fake_state == WAIT_OBJECT_0;
+            let wait_error =
+                waited == WAIT_FAILED || parent_state == WAIT_FAILED || fake_state == WAIT_FAILED;
+            let parent_exit = if parent_signalled {
+                exit_code(parent.handle())
+            } else {
+                None
+            };
+            let fake_exit = if fake_signalled {
+                exit_code(fake.handle())
+            } else {
+                None
+            };
+            let sentinel_alive = sentinel.live();
+            std::fs::write(root.join("sentinel-ping"), b"ping").unwrap();
+            let until = Instant::now() + Duration::from_secs(1);
+            while !fixed_file(&root.join("sentinel-pong"), b"alive")
+                && Instant::now() < until
+                && sentinel.live()
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let sentinel_responsive =
+                fixed_file(&root.join("sentinel-pong"), b"alive") && sentinel.live();
+            std::fs::write(root.join("sentinel-release"), b"release").unwrap();
+            let sentinel_released = unsafe { WaitForSingleObject(sentinel.handle(), 1000) }
+                == WAIT_OBJECT_0
+                && sentinel
+                    .child
+                    .try_wait()
+                    .unwrap()
+                    .is_some_and(|s| s.success());
+            let passed = waited == WAIT_OBJECT_0
+                && parent_signalled
+                && fake_signalled
+                && !wait_error
+                && elapsed_ms < 5000
+                && parent_exit.is_some()
+                && fake_exit.is_some()
+                && sentinel_alive
+                && sentinel_responsive
+                && sentinel_released;
+            println!(
+                "{}",
+                json!({"proof":"windows-parent-death-v1","phase":scenario,"parentPid":parent.child.id(),"sentinelPid":sentinel.child.id(),"fakePid":pid,"creationHigh":created.dwHighDateTime,"creationLow":created.dwLowDateTime,"startedUnixMs":started_unix_ms,"elapsedMs":elapsed_ms,"parentSignalled":parent_signalled,"fakeSignalled":fake_signalled,"sentinelAlive":sentinel_alive,"sentinelResponsive":sentinel_responsive,"sentinelReleased":sentinel_released,"waitError":wait_error,"parentExit":parent_exit,"fakeExit":fake_exit,"passed":passed})
+            );
+            assert!(passed, "Windows owned parent-death proof failed");
+        }
+    }
+}
+
 async fn read_generation_cancellation(executable: PathBuf) {
     use std::time::{Duration, Instant};
     let fixture = tempfile::tempdir().unwrap();
@@ -991,6 +1264,13 @@ fn main() {
     if tesina_lib::local_ai::guardian_entry() {
         return;
     }
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--sentinel") {
+        windows_death::sentinel(PathBuf::from(
+            std::env::args_os().nth(2).expect("owned sentinel fixture"),
+        ));
+        return;
+    }
     #[cfg(target_os = "macos")]
     if std::env::args().nth(1).as_deref() == Some("--prelaunch-parent") {
         prelaunch_parent();
@@ -1047,6 +1327,12 @@ fn main() {
         #[cfg(target_os = "macos")]
         if std::env::args().nth(2).as_deref() == Some("--death-only") {
             parent_death_phases(&executable).await;
+            println!("local-ai-native-proof: actual service parent-death phases passed");
+            return;
+        }
+        #[cfg(windows)]
+        if std::env::args().nth(2).as_deref() == Some("--death-only") {
+            windows_death::run(&executable);
             println!("local-ai-native-proof: actual service parent-death phases passed");
             return;
         }
@@ -1162,6 +1448,8 @@ fn main() {
         if tasks_only { println!("local-ai-native-proof: four native task schema cases passed"); return; }
         #[cfg(target_os = "macos")]
         parent_death_phases(&executable).await;
+        #[cfg(windows)]
+        windows_death::run(&executable);
         println!("local-ai-native-proof: both task shapes and both languages passed; webview/platform matrix pending");
     });
 }

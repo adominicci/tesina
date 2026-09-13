@@ -217,7 +217,21 @@ describe("hidden coach module boundary", () => {
       !file.path.includes(".test.") &&
       !sanctioned.has(file.path)
     );
-    expect(findRuntimeRegistrations(files)).toEqual([]);
+    // LT-05 reuses only the category contract, not coach execution or UI.
+    const categoryImports = new Map([
+      [
+        new URL("../../local-ai/types.ts", COACH_DIR).pathname,
+        'import type { CoachCategory } from "../learning/coach/types.ts";',
+      ],
+      [
+        new URL("../../local-ai/validation.ts", COACH_DIR).pathname,
+        'import { COACH_CATEGORIES } from "../learning/coach/types.ts";',
+      ],
+    ]);
+    expect(findRuntimeRegistrations(files.map((file) => ({
+      ...file,
+      source: file.source.replace(categoryImports.get(file.path) ?? "", ""),
+    })))).toEqual([]);
   });
 
   it("detects route and Tauri registration mutations", () => {

@@ -50,6 +50,93 @@ describe("UpdaterStore install lifecycle", () => {
     void svelteRuntime;
   });
 
+  it("waits for inference shutdown after persistence and before Windows installation", async () => {
+    const events: string[] = [];
+    const store = new UpdaterStore({
+      check: () =>
+        Promise.resolve({
+          version: "0.2.0",
+          downloadAndInstall: async () => {},
+          download: () => {
+            events.push("download");
+            return Promise.resolve();
+          },
+          install: () => {
+            events.push("install");
+            return Promise.resolve();
+          },
+        }),
+      hostOs: () => Promise.resolve("windows"),
+      storage: () => null,
+      flushPending: () => {
+        events.push("persist");
+        return Promise.resolve();
+      },
+      prepareInferenceShutdown: () => {
+        events.push("inference");
+        return Promise.resolve();
+      },
+      relaunch: () => {
+        events.push("relaunch");
+        return Promise.resolve();
+      },
+    });
+    await store.check();
+    await store.install();
+    expect(events).toEqual(["download", "persist", "inference", "install"]);
+  });
+
+  it("finalizes failed inference cleanup even when recovery rejects and keeps retries before install", async () => {
+    const consoleError = vi.spyOn(console, "error").mockImplementation(
+      () => {},
+    );
+    const cleanupError = new Error("cleanup failed");
+    const recoveryError = new Error("RECOVERY_DIAGNOSTIC_CANARY");
+    const prepareInferenceShutdown = vi.fn<() => Promise<void>>()
+      .mockRejectedValue(cleanupError);
+    const resumeAfterFailedShutdown = vi.fn<() => Promise<void>>()
+      .mockRejectedValue(recoveryError);
+    const install = vi.fn<() => Promise<void>>().mockResolvedValue();
+    const relaunch = vi.fn<() => Promise<void>>().mockResolvedValue();
+    const downloadAndInstall = vi.fn<() => Promise<void>>().mockResolvedValue();
+    const storage = new MemoryStorage();
+    const store = new UpdaterStore({
+      check: () =>
+        Promise.resolve({
+          version: "0.2.0",
+          downloadAndInstall,
+          download: () => Promise.resolve(),
+          install,
+        }),
+      hostOs: () => Promise.resolve("windows"),
+      storage: () => storage,
+      flushPending: () => Promise.resolve(),
+      prepareInferenceShutdown,
+      resumeAfterFailedShutdown,
+      relaunch,
+    });
+    try {
+      await store.check();
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        await expect(store.install()).resolves.toBeUndefined();
+        expect(store.status).toBe("error");
+        expect(prepareInferenceShutdown).toHaveBeenCalledTimes(attempt);
+        expect(resumeAfterFailedShutdown).toHaveBeenCalledTimes(attempt);
+        expect(install).not.toHaveBeenCalled();
+        expect(downloadAndInstall).not.toHaveBeenCalled();
+        expect(relaunch).not.toHaveBeenCalled();
+        expect(readPendingReleaseNotes(storage)).toBeNull();
+        expect(consoleError).toHaveBeenLastCalledWith(
+          "No se pudo instalar la actualización:",
+          cleanupError,
+        );
+      }
+      expect(consoleError).toHaveBeenCalledTimes(2);
+    } finally {
+      consoleError.mockRestore();
+    }
+  });
+
   it("persists manifest notes after installation and before relaunch", async () => {
     const storage = new MemoryStorage();
     let installed = false;

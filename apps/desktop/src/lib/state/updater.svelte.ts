@@ -7,6 +7,10 @@ import {
 } from "$lib/update/releaseNotes";
 import { persistence } from "$lib/persist/coordinator";
 import { operations } from "$lib/persist/operationCoordinator";
+import {
+  prepareLocalInferenceShutdown,
+  resumeLocalInference,
+} from "$lib/local-ai/lifecycle";
 
 export interface UpdaterUpdate {
   version: string;
@@ -19,6 +23,7 @@ export interface UpdaterUpdate {
 export interface UpdaterDependencies {
   check(): Promise<UpdaterUpdate | null>;
   flushPending(): Promise<void>;
+  prepareInferenceShutdown?(): Promise<void>;
   relaunch(): Promise<void>;
   resumeAfterFailedShutdown?(): Promise<void>;
   storage(): ReleaseNotesStorage | null;
@@ -36,7 +41,11 @@ const defaultDependencies: UpdaterDependencies = {
     await persistence.flushPending();
   },
   relaunch,
-  resumeAfterFailedShutdown: () => operations.resumeAfterFailedShutdown(),
+  prepareInferenceShutdown: prepareLocalInferenceShutdown,
+  resumeAfterFailedShutdown: async () => {
+    await operations.resumeAfterFailedShutdown();
+    await resumeLocalInference();
+  },
   storage: () => {
     try {
       return typeof localStorage === "undefined" ? null : localStorage;
@@ -157,6 +166,7 @@ export class UpdaterStore {
           this.#downloaded = 0;
           await update.download(onProgress);
           await this.#dependencies.flushPending();
+          await this.#dependencies.prepareInferenceShutdown?.();
           this.#savePendingNotes(update);
           await update.install();
           this.progress = 100;
@@ -175,13 +185,18 @@ export class UpdaterStore {
         this.progress = 100;
       }
       await this.#dependencies.flushPending();
+      await this.#dependencies.prepareInferenceShutdown?.();
       this.#savePendingNotes(update);
       await this.#dependencies.relaunch();
       this.#update = null;
       this.#installedPendingRelaunch = false;
       this.status = "idle";
     } catch (err) {
-      await this.#dependencies.resumeAfterFailedShutdown?.();
+      try {
+        await this.#dependencies.resumeAfterFailedShutdown?.();
+      } catch {
+        // Recovery can remain blocked by failed cleanup; retain the original error.
+      }
       console.error("No se pudo instalar la actualización:", err);
       this.status = "error";
     }

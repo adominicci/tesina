@@ -1,6 +1,6 @@
 [package]
 name = "tesina"
-version = "0.1.24"
+version = "0.1.25"
 description = "Tesina: APA 7 academic writing app"
 authors = ["Andres Dominicci and Tesina contributors"]
 license = "MIT"
@@ -18,6 +18,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
+[target.'cfg(target_os = "macos")'.build-dependencies]
+# Locked MIT OR Apache-2.0 SDK shim compiler; no upstream runtime build.
+cc = "=1.2.67"
+
 [features]
 native-proof-host = []
 packaged-backup-smoke = ["packaged-portable-smoke"]
@@ -26,13 +30,13 @@ packaged-spelling-proof = []
 pdf-proof-host = []
 spelling-proof-host = []
 spelling-ipc-test = ["tauri/test"]
+local-ai-proof = []
 
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-http = "2"
 tauri-plugin-updater = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
@@ -41,7 +45,15 @@ sha2 = "0.10"
 same-file = "=1.0.6"
 uuid = { version = "1", features = ["v4"] }
 tauri-plugin-single-instance = "2.4.3"
-tokio = { version = "1", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1", features = ["macros", "rt", "sync", "time", "net", "io-util", "process"] }
+hyper = { version = "=1.10.1", features = ["client", "http1"] }
+hyper-util = { version = "=0.1.20", features = ["tokio"] }
+http-body-util = "=0.1.3"
+bytes = "=1.12.1"
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls-no-provider"] }
+rustls = { version = "=0.23.41", default-features = false, features = ["ring"] }
+flate2 = "=1.1.9"
+url = "=2.5.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # Cocoa printing for the silent PDF export. These exact versions already arrive
@@ -81,6 +93,14 @@ windows = { version = "=0.61.3", features = [
   "Win32_Globalization",
   "Win32_Storage_FileSystem",
   "Win32_System_Com",
+  "Win32_NetworkManagement_IpHelper",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Networking_WinSock",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+  "Win32_Security",
+  "Win32_System_Pipes",
+  "Win32_System_IO",
 ] }
 
 [target.'cfg(unix)'.dependencies]
@@ -89,14 +109,13 @@ windows = { version = "=0.61.3", features = [
 rustix = { version = "1", features = ["fs"] }
 
 [dev-dependencies]
+tokio = { version = "=1.52.3", features = ["test-util"] }
 tempfile = "3"
 # Test-only native WebView2 host. These exact versions already back the locked
 # Tauri runtime; keeping them as dev dependencies excludes the host from app
 # bundles while allowing the example to use the same Tao/Wry stack directly.
-# url 2.5.8 is likewise already locked, is MIT OR Apache-2.0, and lets the
-# direct host parse its loopback origin instead of trusting a string prefix.
+# The host shares the pinned production url parser above.
 tao = "=0.35.3"
-url = "=2.5.8"
 wry = "=0.55.1"
 
 [target.'cfg(windows)'.dev-dependencies]
@@ -113,6 +132,21 @@ windows-sys = { version = "=0.61.2", features = [
   "Win32_UI_Input_KeyboardAndMouse",
   "Win32_UI_WindowsAndMessaging",
 ] }
+
+[[example]]
+name = "local-ai-webview-proof"
+path = "examples/local-ai-webview-proof.rs"
+required-features = ["local-ai-proof"]
+
+[[example]]
+name = "local-ai-native-proof"
+path = "examples/local-ai-native-proof.rs"
+required-features = ["local-ai-proof"]
+
+[[example]]
+name = "local-ai-fake"
+path = "examples/local-ai-fake.rs"
+required-features = ["local-ai-proof"]
 
 [[example]]
 name = "webview2-proof-host"

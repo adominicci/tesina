@@ -5,6 +5,18 @@ and [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.25] - 2026-09-13
+
+### Changed
+
+- Add a dormant native boundary for optional local inference. No model download
+  or visible AI feature is enabled; runtime packaging and cross-platform
+  acceptance remain pending.
+- Reference autofill now uses bounded native public HTTP(S) retrieval instead
+  of unrestricted native HTTP access. Private/intranet and loopback addresses,
+  special-use destinations, and ports other than 80 or 443 are no longer
+  supported for reference lookup.
+
 ## [0.1.24] - 2026-09-13
 
 ### Added
@@ -361,7 +373,8 @@ and [Semantic Versioning](https://semver.org/).
 - Improved the reliability of installing updates and showing release notes
   after restart.
 
-[Unreleased]: https://github.com/adominicci/tesina/compare/v0.1.24...HEAD
+[Unreleased]: https://github.com/adominicci/tesina/compare/v0.1.25...HEAD
+[0.1.25]: https://github.com/adominicci/tesina/compare/v0.1.24...v0.1.25
 [0.1.24]: https://github.com/adominicci/tesina/compare/v0.1.23...v0.1.24
 [0.1.23]: https://github.com/adominicci/tesina/compare/v0.1.22...v0.1.23
 [0.1.22]: https://github.com/adominicci/tesina/compare/v0.1.21...v0.1.22
